@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Stepik Copilot DOM Prototype",
+  "description": "DOM-only prototype that extracts visible Stepik step data for local MVP validation.",
+  "version": "0.1.0",
+  "content_scripts": [
+    {
+      "matches": ["https://stepik.org/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
