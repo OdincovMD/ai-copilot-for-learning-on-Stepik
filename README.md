@@ -50,6 +50,12 @@ type StepPayload = {
   url: string;
   title?: string;
   stepText: string;
+  stepMarkdown: string;
+  stepContent: {
+    format: "markdown";
+    markdown: string;
+    plainText: string;
+  };
   comments: string[];
   commentThreads: Array<{
     root: {
@@ -101,6 +107,11 @@ type StepPayload = {
 };
 ```
 
+`stepText` остается plain-text полем для быстрых проверок и совместимости.
+`stepMarkdown` и `stepContent.markdown` сохраняют форматирование учебного
+текста в Markdown: заголовки, абзацы, списки, ссылки, inline code, code blocks,
+цитаты и простые таблицы. Это будущая база для экспорта конспекта в `.md`.
+
 На страницах без видимых комментариев `comments` должен быть пустым массивом.
 Поле `comments` остается плоским списком для совместимости, а `commentThreads`
 сохраняет структуру переписок: корневой комментарий и ответы на него.
@@ -113,6 +124,9 @@ payload как источник прямого ответа.
 
 - Плавающая кнопка справа открывает и закрывает сайдбар.
 - Кнопка `Обновить данные` повторно собирает payload из видимого DOM.
+- Блок `Текст шага` отображает Markdown-preview с заголовками, списками,
+  ссылками и code blocks.
+- Кнопка `Скопировать MD` копирует Markdown текущего шага в буфер обмена.
 - Сайдбар показывает состояния сбора, ошибки и пустого текста шага.
 - UI изолирован через Shadow DOM, чтобы стили Stepik и расширения не
   конфликтовали.

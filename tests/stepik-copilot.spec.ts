@@ -78,6 +78,12 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
   const [, payloadHandle] = message.args();
   const payload = await payloadHandle.jsonValue() as {
     stepText: string;
+    stepMarkdown: string;
+    stepContent: {
+      format: string;
+      markdown: string;
+      plainText: string;
+    };
     comments: string[];
     commentThreads: Array<{
       root: {
@@ -115,6 +121,12 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
   };
 
   expect(payload.stepText).toBe("Выберите один вариант из списка");
+  expect(payload.stepMarkdown).toBe("Выберите один вариант из списка");
+  expect(payload.stepContent).toMatchObject({
+    format: "markdown",
+    markdown: "Выберите один вариант из списка",
+    plainText: "Выберите один вариант из списка",
+  });
   expect(payload.metadata.courseTitle).toBe("Python для собеседования");
   expect(payload.metadata.lessonTitle).toBe("5.2 Тест: Списки");
   expect(payload.comments).toEqual([
@@ -136,6 +148,72 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
     answerOptionsCount: 4,
   });
   expect(payload.context.stats.extractionVersion).toBe("dom-v2");
+});
+
+test("preserves formatted step content as markdown", async ({ page }) => {
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Formatted Stepik mock</title>
+        <style>
+          .step-inner__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="step-inner__text">
+            <h2>Настройка BotFather</h2>
+            <p>Откройте <strong>официального</strong> бота <code>@BotFather</code>.</p>
+            <ul>
+              <li>Проверьте галочку рядом с именем.</li>
+              <li>Посмотрите количество пользователей.</li>
+            </ul>
+            <pre><code>/newbot
+Token: example</code></pre>
+            <p><a href="https://core.telegram.org/bots">Документация Telegram</a></p>
+          </section>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as {
+    stepText: string;
+    stepMarkdown: string;
+    stepContent: {
+      markdown: string;
+      plainText: string;
+    };
+  };
+
+  expect(payload.stepText).toContain("Настройка BotFather");
+  expect(payload.stepMarkdown).toBe([
+    "## Настройка BotFather",
+    "",
+    "Откройте **официального** бота `@BotFather`.",
+    "",
+    "- Проверьте галочку рядом с именем.",
+    "- Посмотрите количество пользователей.",
+    "",
+    "```",
+    "/newbot",
+    "Token: example",
+    "```",
+    "",
+    "[Документация Telegram](https://core.telegram.org/bots)",
+  ].join("\n"));
+  expect(payload.stepContent.markdown).toBe(payload.stepMarkdown);
+  expect(payload.stepContent.plainText).toBe(payload.stepText);
 });
 
 test("extracts Stepik comment replies as structured threads", async ({ page }) => {
@@ -318,4 +396,63 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
   expect(sidebarText).toContain("Данные собраны");
   expect(sidebarText).toContain("Выберите один вариант из списка");
   expect(sidebarText).toContain("Комментарий для проверки сайдбара.");
+});
+
+test("renders markdown formatting in the sidebar", async ({ page }) => {
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik markdown sidebar mock</title>
+        <style>
+          body { margin: 0; min-height: 900px; font-family: sans-serif; }
+          .step-inner__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="step-inner__text">
+            <h2>Настройка BotFather</h2>
+            <p>Откройте <strong>официального</strong> бота <code>@BotFather</code>.</p>
+            <ul>
+              <li>Проверьте галочку.</li>
+            </ul>
+          </section>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-trigger")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+    });
+  }).toContain("Данные собраны");
+
+  const rendered = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return {
+      heading: shadow?.querySelector(".sc-md-heading")?.textContent,
+      inlineCode: shadow?.querySelector(".sc-md-inline-code")?.textContent,
+      listItem: shadow?.querySelector(".sc-md-list li")?.textContent,
+      copyButton: shadow?.querySelector(".sc-copy")?.textContent,
+    };
+  });
+
+  expect(rendered).toEqual({
+    heading: "Настройка BotFather",
+    inlineCode: "@BotFather",
+    listItem: "Проверьте галочку.",
+    copyButton: "Скопировать MD",
+  });
 });

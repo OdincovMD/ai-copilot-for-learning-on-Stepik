@@ -2,6 +2,8 @@ export type StepPayload = {
   url: string;
   title?: string;
   stepText: string;
+  stepMarkdown: string;
+  stepContent: StepContent;
   comments: string[];
   commentThreads: CommentThread[];
   metadata: {
@@ -42,6 +44,12 @@ export type StepContext = {
 };
 
 export type StepKind = "choice" | "code" | "text" | "video" | "unknown";
+
+export type StepContent = {
+  format: "markdown";
+  markdown: string;
+  plainText: string;
+};
 
 export type CommentThread = {
   root: CommentEntry;
@@ -274,7 +282,8 @@ export function extractStepPayload(documentRef: Document = document): StepPayloa
     lessonTitle: findFirstText(documentRef, LESSON_TITLE_SELECTORS),
     stepTitle: findFirstText(documentRef, STEP_TITLE_SELECTORS),
   };
-  const stepText = extractStepText(documentRef);
+  const stepContent = extractStepContent(documentRef);
+  const stepText = stepContent.plainText;
   const commentThreads = extractCommentThreads(documentRef);
   const comments = flattenCommentThreads(commentThreads) ?? extractLooseComments(documentRef);
   const title = cleanText(documentRef.title) || metadata.stepTitle;
@@ -283,6 +292,8 @@ export function extractStepPayload(documentRef: Document = document): StepPayloa
     url: documentRef.location.href,
     title,
     stepText,
+    stepMarkdown: stepContent.markdown,
+    stepContent,
     comments,
     commentThreads,
     metadata: removeEmptyValues(metadata),
@@ -390,16 +401,181 @@ function detectStepKind(signals: {
   return "unknown";
 }
 
-function extractStepText(documentRef: Document): string {
+function extractStepContent(documentRef: Document): StepContent {
   const root = findFirstVisibleElement(documentRef, STEP_TEXT_SELECTORS) ?? documentRef.body;
   if (!root) {
-    return "";
+    return {
+      format: "markdown",
+      markdown: "",
+      plainText: "",
+    };
   }
 
+  const textClone = cloneStepContentRoot(root);
+  const markdownClone = cloneStepContentRoot(root);
+  const plainText = sanitizeStepText(cleanText(textClone.textContent));
+  const markdown = sanitizeMarkdown(domToMarkdown(markdownClone)) || plainText;
+
+  return {
+    format: "markdown",
+    markdown,
+    plainText,
+  };
+}
+
+function cloneStepContentRoot(root: HTMLElement): HTMLElement {
   const clone = root.cloneNode(true) as HTMLElement;
   clone.querySelectorAll(REMOVABLE_SELECTORS.join(",")).forEach((element) => element.remove());
 
-  return sanitizeStepText(cleanText(clone.textContent));
+  return clone;
+}
+
+function domToMarkdown(node: Node, context: { listDepth?: number; ordered?: boolean } = {}): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return cleanMarkdownText(node.textContent ?? "");
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return Array.from(node.childNodes).map((child) => domToMarkdown(child, context)).join("");
+  }
+
+  const tagName = node.tagName.toLowerCase();
+  const childMarkdown = () => Array.from(node.childNodes).map((child) => domToMarkdown(child, context)).join("");
+  const blockMarkdown = () => childMarkdown().trim();
+
+  switch (tagName) {
+    case "h1":
+    case "h2":
+    case "h3":
+    case "h4":
+    case "h5":
+    case "h6": {
+      const level = Number(tagName.slice(1));
+      return `\n\n${"#".repeat(level)} ${blockMarkdown()}\n\n`;
+    }
+    case "p":
+      return `\n\n${blockMarkdown()}\n\n`;
+    case "br":
+      return "\n";
+    case "strong":
+    case "b":
+      return wrapInline(childMarkdown(), "**");
+    case "em":
+    case "i":
+      return wrapInline(childMarkdown(), "*");
+    case "code":
+      if (node.closest("pre")) {
+        return node.textContent ?? "";
+      }
+      return inlineCode(node.textContent ?? "");
+    case "pre":
+      return `\n\n\`\`\`\n${(node.textContent ?? "").trim()}\n\`\`\`\n\n`;
+    case "a": {
+      const href = node.getAttribute("href");
+      const text = blockMarkdown();
+      return href && text ? `[${text}](${href})` : text;
+    }
+    case "ul":
+      return markdownList(node, false, context);
+    case "ol":
+      return markdownList(node, true, context);
+    case "li":
+      return blockMarkdown();
+    case "blockquote":
+      return `\n\n${blockMarkdown().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+    case "table":
+      return markdownTable(node);
+    case "thead":
+    case "tbody":
+    case "tfoot":
+    case "tr":
+    case "th":
+    case "td":
+      return childMarkdown();
+    default:
+      if (isBlockElement(tagName)) {
+        return `\n\n${blockMarkdown()}\n\n`;
+      }
+
+      return childMarkdown();
+  }
+}
+
+function markdownList(element: HTMLElement, ordered: boolean, context: { listDepth?: number }): string {
+  const depth = context.listDepth ?? 0;
+  const items = Array.from(element.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName.toLowerCase() === "li");
+
+  const lines = items.flatMap((item, index) => {
+    const nestedLists = Array.from(item.children).filter((child): child is HTMLElement => {
+      return child instanceof HTMLElement && ["ul", "ol"].includes(child.tagName.toLowerCase());
+    });
+    const itemClone = item.cloneNode(true) as HTMLElement;
+    itemClone.querySelectorAll(":scope > ul, :scope > ol").forEach((node) => node.remove());
+
+    const prefix = ordered ? `${index + 1}.` : "-";
+    const indent = "  ".repeat(depth);
+    const text = sanitizeMarkdown(domToMarkdown(itemClone, { listDepth: depth })).replace(/\n/g, `\n${indent}  `);
+    const nested = nestedLists.map((list) => domToMarkdown(list, { listDepth: depth + 1 })).join("");
+
+    return [`${indent}${prefix} ${text}`, nested.trimEnd()].filter(Boolean);
+  });
+
+  return `\n\n${lines.join("\n")}\n\n`;
+}
+
+function markdownTable(table: HTMLElement): string {
+  const rows = Array.from(table.querySelectorAll("tr")).map((row) => {
+    return Array.from(row.querySelectorAll("th, td")).map((cell) => sanitizeMarkdown(domToMarkdown(cell)).replace(/\|/g, "\\|"));
+  }).filter((cells) => cells.length > 0);
+
+  if (rows.length === 0) {
+    return "";
+  }
+
+  const [header, ...body] = rows;
+  const separator = header.map(() => "---");
+  const tableRows = [header, separator, ...body].map((row) => `| ${row.join(" | ")} |`);
+
+  return `\n\n${tableRows.join("\n")}\n\n`;
+}
+
+function sanitizeMarkdown(value: string): string {
+  return value
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+function cleanMarkdownText(value: string): string {
+  return value.replace(/\s+/g, " ");
+}
+
+function wrapInline(value: string, marker: string): string {
+  const text = value.trim();
+
+  return text ? `${marker}${text}${marker}` : "";
+}
+
+function inlineCode(value: string): string {
+  const text = value.trim();
+  const fence = text.includes("`") ? "``" : "`";
+
+  return text ? `${fence}${text}${fence}` : "";
+}
+
+function isBlockElement(tagName: string): boolean {
+  return [
+    "article",
+    "aside",
+    "div",
+    "figure",
+    "figcaption",
+    "main",
+    "section",
+  ].includes(tagName);
 }
 
 function extractCommentThreads(documentRef: Document): CommentThread[] {

@@ -33,9 +33,11 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
   let isOpen = false;
   let state: SidebarState = { status: "idle" };
+  let copyState: "idle" | "copied" | "error" = "idle";
 
   function setState(nextState: SidebarState): void {
     state = nextState;
+    copyState = "idle";
     render();
   }
 
@@ -98,6 +100,15 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     appendStateContent(body);
 
     const actions = createElement("div", "sc-actions");
+    const payload = state.payload;
+    if (payload?.stepMarkdown) {
+      const copyButton = createElement("button", `sc-copy is-${copyState}`) as HTMLButtonElement;
+      copyButton.type = "button";
+      copyButton.append(createIcon(copyState === "copied" ? "check" : "copy"), document.createTextNode(getCopyButtonLabel(copyState)));
+      copyButton.addEventListener("click", () => copyMarkdown(payload.stepMarkdown));
+      actions.append(copyButton);
+    }
+
     const refreshButton = createElement("button", "sc-refresh") as HTMLButtonElement;
     refreshButton.type = "button";
     refreshButton.disabled = state.status === "collecting";
@@ -168,7 +179,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
     fragment.append(
       createSection("Контекст", createContextList(payload)),
-      createSection("Текст шага", createParagraph(payload.stepText || "Текст шага пока не найден.", "sc-step-text")),
+      createSection("Текст шага", createStepContentView(payload)),
       createSection("Комментарии", createCommentsView(payload)),
       createSection("Технически", createTechnicalList(payload)),
     );
@@ -181,6 +192,21 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   return {
     setState,
   };
+
+  async function copyMarkdown(markdown: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      copyState = "copied";
+    } catch {
+      copyState = "error";
+    }
+
+    render();
+    window.setTimeout(() => {
+      copyState = "idle";
+      render();
+    }, 1_600);
+  }
 }
 
 function createContextList(payload: StepPayload): HTMLElement {
@@ -209,6 +235,7 @@ function createTechnicalList(payload: StepPayload): HTMLElement {
   appendKeyValue(list, "Треды", `${context.stats.commentThreadsCount}`);
   appendKeyValue(list, "Ответы", `${context.stats.repliesCount}`);
   appendKeyValue(list, "Символы шага", `${payload.stepText.length}`);
+  appendKeyValue(list, "Markdown", `${payload.stepMarkdown.length}`);
   appendKeyValue(list, "Варианты", formatOptionalNumber(context.task.answerOptionsCount));
   appendKeyValue(list, "Controls", context.task.hasAnswerControls ? "есть" : "нет");
   appendKeyValue(list, "Версия", context.stats.extractionVersion);
@@ -245,6 +272,161 @@ function formatCollectedAt(value: string): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function getCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
+  if (copyState === "copied") {
+    return "Markdown скопирован";
+  }
+
+  if (copyState === "error") {
+    return "Не удалось скопировать";
+  }
+
+  return "Скопировать MD";
+}
+
+function createStepContentView(payload: StepPayload): HTMLElement {
+  const markdown = payload.stepMarkdown || payload.stepText;
+
+  if (!markdown) {
+    return createParagraph("Текст шага пока не найден.", "sc-muted");
+  }
+
+  return createMarkdownPreview(markdown);
+}
+
+function createMarkdownPreview(markdown: string): HTMLElement {
+  const root = createElement("div", "sc-markdown");
+  const lines = markdown.split("\n");
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed === "```") {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && lines[index].trim() !== "```") {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      root.append(createCodeBlock(codeLines.join("\n")));
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const heading = createElement("div", `sc-md-heading is-h${headingMatch[1].length}`);
+      appendInlineMarkdown(heading, headingMatch[2]);
+      root.append(heading);
+      index += 1;
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      const list = createElement("ul", "sc-md-list");
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        const item = createElement("li");
+        appendInlineMarkdown(item, lines[index].trim().replace(/^[-*]\s+/, ""));
+        list.append(item);
+        index += 1;
+      }
+      root.append(list);
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const list = createElement("ol", "sc-md-list");
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
+        const item = createElement("li");
+        appendInlineMarkdown(item, lines[index].trim().replace(/^\d+\.\s+/, ""));
+        list.append(item);
+        index += 1;
+      }
+      root.append(list);
+      continue;
+    }
+
+    if (trimmed.startsWith("> ")) {
+      const quote = createElement("blockquote", "sc-md-quote");
+      const quoteLines: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith("> ")) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      appendInlineMarkdown(quote, quoteLines.join(" "));
+      root.append(quote);
+      continue;
+    }
+
+    const paragraphLines = [trimmed];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index].trim())) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    const paragraph = createElement("p", "sc-md-paragraph");
+    appendInlineMarkdown(paragraph, paragraphLines.join(" "));
+    root.append(paragraph);
+  }
+
+  return root;
+}
+
+function isMarkdownBlockStart(line: string): boolean {
+  return line === "```" || /^(#{1,6})\s+/.test(line) || /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line) || line.startsWith("> ");
+}
+
+function createCodeBlock(code: string): HTMLElement {
+  const pre = createElement("pre", "sc-md-code");
+  const codeElement = createElement("code");
+  codeElement.textContent = code;
+  pre.append(codeElement);
+
+  return pre;
+}
+
+function appendInlineMarkdown(parent: HTMLElement, text: string): void {
+  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parent.append(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+
+    if (match[2]) {
+      const strong = createElement("strong");
+      strong.textContent = match[2];
+      parent.append(strong);
+    } else if (match[3]) {
+      const code = createElement("code", "sc-md-inline-code");
+      code.textContent = match[3];
+      parent.append(code);
+    } else if (match[4] && match[5]) {
+      const link = createElement("a", "sc-md-link") as HTMLAnchorElement;
+      link.href = match[5];
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = match[4];
+      parent.append(link);
+    }
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parent.append(document.createTextNode(text.slice(lastIndex)));
+  }
 }
 
 function createCommentsView(payload: StepPayload): HTMLElement {
@@ -372,7 +554,7 @@ function createElement(tagName: string, className?: string): HTMLElement {
   return element;
 }
 
-function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "spinner" | "warning"): SVGElement {
+function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh" | "spinner" | "warning"): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -382,6 +564,7 @@ function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "spin
     check: ["M20 6 9 17l-5-5"],
     "chevron-left": ["M15 18 9 12l6-6"],
     close: ["M18 6 6 18", "M6 6l12 12"],
+    copy: ["M8 8h10v10H8z", "M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
     refresh: ["M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"],
     spinner: ["M21 12a9 9 0 0 1-9 9"],
     warning: ["M12 8v5", "M12 17h.01", "M10.3 4.6 2.7 18a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"],
@@ -633,6 +816,94 @@ const SIDEBAR_CSS = `
     color: var(--sc-muted);
   }
 
+  .sc-markdown {
+    display: grid;
+    gap: 10px;
+    color: var(--sc-text);
+    font-size: 13px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-markdown > * {
+    margin: 0;
+  }
+
+  .sc-md-heading {
+    color: var(--sc-text);
+    font-weight: 760;
+    line-height: 1.28;
+    letter-spacing: 0;
+  }
+
+  .sc-md-heading.is-h1,
+  .sc-md-heading.is-h2 {
+    font-size: 15px;
+  }
+
+  .sc-md-heading.is-h3,
+  .sc-md-heading.is-h4,
+  .sc-md-heading.is-h5,
+  .sc-md-heading.is-h6 {
+    font-size: 14px;
+  }
+
+  .sc-md-paragraph {
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .sc-md-list {
+    display: grid;
+    gap: 6px;
+    padding-left: 18px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .sc-md-code {
+    max-width: 100%;
+    padding: 10px 11px;
+    color: #22312b;
+    background: #f3f6f5;
+    border: 1px solid var(--sc-border);
+    border-radius: 6px;
+    overflow: auto;
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre;
+  }
+
+  .sc-md-inline-code {
+    padding: 1px 4px;
+    color: #174c33;
+    background: var(--sc-green-soft);
+    border-radius: 4px;
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 12px;
+  }
+
+  .sc-md-link {
+    color: #1473e6;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(20, 115, 230, 0.28);
+  }
+
+  .sc-md-link:hover {
+    border-bottom-color: currentColor;
+  }
+
+  .sc-md-quote {
+    padding: 8px 10px;
+    color: var(--sc-muted);
+    background: var(--sc-soft);
+    border-left: 3px solid var(--sc-green);
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
   .sc-comments {
     display: grid;
     gap: 10px;
@@ -748,8 +1019,45 @@ const SIDEBAR_CSS = `
   }
 
   .sc-actions {
+    display: grid;
+    gap: 10px;
     padding: 16px 20px 20px;
     border-top: 1px solid var(--sc-border);
+  }
+
+  .sc-copy {
+    width: 100%;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 9px 14px;
+    color: var(--sc-text);
+    background: var(--sc-bg);
+    border: 1px solid var(--sc-border-strong);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-copy:hover {
+    background: var(--sc-soft);
+    transform: translateY(-1px);
+  }
+
+  .sc-copy.is-copied {
+    color: var(--sc-green-dark);
+    border-color: rgba(31, 157, 97, 0.42);
+    background: var(--sc-green-soft);
+  }
+
+  .sc-copy.is-error {
+    color: var(--sc-error);
   }
 
   .sc-refresh {
