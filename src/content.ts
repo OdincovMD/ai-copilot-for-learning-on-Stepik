@@ -1,41 +1,63 @@
+import { createSidebar, type SidebarState } from "./sidebar";
 import { extractStepPayload } from "./stepPayload";
 
 const LOG_PREFIX = "[Stepik Copilot DOM Prototype]";
 const DEBOUNCE_MS = 500;
 const RETRY_MS = 750;
 const MAX_WAIT_MS = 20_000;
+const MANUAL_REFRESH_DELAY_MS = 160;
 
 let lastUrl = window.location.href;
 let debounceTimer: number | undefined;
 let retryTimer: number | undefined;
 let pageStartedAt = Date.now();
 let lastLoggedSignature: string | undefined;
+let lastPayload: ReturnType<typeof extractStepPayload> | undefined;
 
-function logPayload(): void {
-  const payload = extractStepPayload(document);
-  const signature = createPayloadSignature(payload);
+const sidebar = createSidebar({
+  onRefresh: () => {
+    sidebar.setState({ status: "collecting", payload: lastPayload });
+    window.setTimeout(() => collectAndPublishPayload({ force: true }), MANUAL_REFRESH_DELAY_MS);
+  },
+});
 
-  if (isTransientPayload(payload) && Date.now() - pageStartedAt < MAX_WAIT_MS) {
-    scheduleRetry();
-    return;
+function collectAndPublishPayload(options: { force?: boolean } = {}): void {
+  try {
+    const payload = extractStepPayload(document);
+    const signature = createPayloadSignature(payload);
+
+    if (isTransientPayload(payload) && Date.now() - pageStartedAt < MAX_WAIT_MS) {
+      scheduleRetry();
+      return;
+    }
+
+    const nextState = createSidebarState(payload);
+    const shouldPublish = options.force || signature !== lastLoggedSignature;
+
+    lastPayload = payload;
+
+    if (!shouldPublish) {
+      return;
+    }
+
+    lastLoggedSignature = signature;
+    sidebar.setState(nextState);
+    console.log(LOG_PREFIX, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Неизвестная ошибка";
+    sidebar.setState({ status: "error", message, payload: lastPayload });
+    console.error(LOG_PREFIX, message, error);
   }
-
-  if (signature === lastLoggedSignature) {
-    return;
-  }
-
-  lastLoggedSignature = signature;
-  console.log(LOG_PREFIX, payload);
 }
 
-function schedulePayloadLog(): void {
+function schedulePayloadCollection(): void {
   window.clearTimeout(debounceTimer);
-  debounceTimer = window.setTimeout(logPayload, DEBOUNCE_MS);
+  debounceTimer = window.setTimeout(collectAndPublishPayload, DEBOUNCE_MS);
 }
 
 function scheduleRetry(): void {
   window.clearTimeout(retryTimer);
-  retryTimer = window.setTimeout(logPayload, RETRY_MS);
+  retryTimer = window.setTimeout(collectAndPublishPayload, RETRY_MS);
 }
 
 function watchClientSideNavigation(): void {
@@ -44,11 +66,12 @@ function watchClientSideNavigation(): void {
       lastUrl = window.location.href;
       pageStartedAt = Date.now();
       lastLoggedSignature = undefined;
-      schedulePayloadLog();
+      sidebar.setState({ status: "collecting", payload: lastPayload });
+      schedulePayloadCollection();
       return;
     }
 
-    schedulePayloadLog();
+    schedulePayloadCollection();
   });
 
   observer.observe(document.documentElement, {
@@ -65,6 +88,14 @@ function isTransientPayload(payload: ReturnType<typeof extractStepPayload>): boo
   return normalizedStepText === "" || normalizedStepText === "загрузка" || normalizedStepText === "loading";
 }
 
+function createSidebarState(payload: ReturnType<typeof extractStepPayload>): SidebarState {
+  if (payload.stepText.trim().length === 0 || isTransientPayload(payload)) {
+    return { status: "empty", payload };
+  }
+
+  return { status: "ready", payload };
+}
+
 function createPayloadSignature(payload: ReturnType<typeof extractStepPayload>): string {
   return JSON.stringify({
     url: payload.url,
@@ -75,5 +106,5 @@ function createPayloadSignature(payload: ReturnType<typeof extractStepPayload>):
   });
 }
 
-schedulePayloadLog();
+schedulePayloadCollection();
 watchClientSideNavigation();

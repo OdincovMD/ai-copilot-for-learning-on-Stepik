@@ -1,0 +1,321 @@
+import { expect, test } from "@playwright/test";
+import path from "node:path";
+
+const DIST_CONTENT_SCRIPT = path.resolve("dist/content.js");
+const STEPIK_STEP_URL = "https://stepik.org/lesson/1492667/step/5?unit=1512554";
+
+test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.route(STEPIK_STEP_URL, async (route) => {
+    await route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Python для собеседования: урок Тест: Обход Списков, шаг 5 — Stepik</title>
+        <style>
+          body { margin: 0; font-family: sans-serif; }
+          .course-title, .lesson-title, .step-inner__text, .comments__comment { display: block; }
+          .comments__comment { margin: 16px 0; }
+        </style>
+      </head>
+      <body>
+        <header><a class="course-title" href="/course/123">Python для собеседования</a></header>
+        <main>
+          <h1 class="lesson-title">5.2 Тест: Списки</h1>
+          <section class="step-inner__text">Выберите один вариант из списка</section>
+          <section class="attempt">
+            <label><input type="radio" name="answer" /> 1</label>
+            <label><input type="radio" name="answer" /> 5</label>
+            <label><input type="radio" name="answer" /> 2</label>
+            <label><input type="radio" name="answer" /> 3</label>
+          </section>
+          <section class="comments">
+            <article class="comments__comment">
+              <div class="comment__header">
+                <span class="comment__author">Anonymous 919256933</span>
+                <span class="comment__date">6 месяцев назад</span>
+              </div>
+              <div class="comment__text">Вообще-то, ни сколько, если только не поставить pass в теле цикла!</div>
+              <button type="button">Ответить</button>
+            </article>
+            <article class="comments__comment">
+              <div class="comment__header">
+                <span class="comment__author">Anonymous 725861288</span>
+                <span class="comment__date">5 месяцев назад</span>
+              </div>
+              <div class="comment__text">Здесь нет правильного ответа, поправьте условие.</div>
+              <button type="button">Ответить</button>
+            </article>
+            <button type="button">Оставить комментарий</button>
+            <div class="comment__text">30 минут и прокси в телеграмм и стабильный VPN (на ПК) настроил, едем дальше.</div>
+            <div class="comment__text">не получается, ввожу в поиске @BotFather и выскакивает множество чужих ботов. как свой сделать?</div>
+            <div class="comment__text">Хорошее объяснение!</div>
+            <div class="comment__text">Ясно, коротко, красиво! Однозначно лайк!</div>
+            <div class="comments__meta">Сергей Конопацкий</div>
+            <div class="comments__meta">позавчера</div>
+            <div class="comments__meta">Гомзяков Вадим</div>
+            <div class="comments__meta">Посмотреть 1 ответ</div>
+            <div class="comments__meta">Ольга Золотых</div>
+            <div class="comments__meta">Ильдар Киямов</div>
+          </section>
+        </main>
+      </body>
+    </html>
+      `,
+    });
+  });
+  await page.goto(STEPIK_STEP_URL);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as {
+    stepText: string;
+    comments: string[];
+    commentThreads: Array<{
+      root: {
+        author?: string;
+        relativeTime?: string;
+        text: string;
+        mentions: string[];
+      };
+      replies: Array<{
+        author?: string;
+        relativeTime?: string;
+        text: string;
+        mentions: string[];
+      }>;
+    }>;
+    metadata: {
+      courseTitle?: string;
+      lessonTitle?: string;
+    };
+    context: {
+      ids: {
+        lessonId?: string;
+        stepPosition?: string;
+        unitId?: string;
+      };
+      task: {
+        kind: string;
+        hasAnswerControls: boolean;
+        answerOptionsCount?: number;
+      };
+      stats: {
+        extractionVersion: string;
+      };
+    };
+  };
+
+  expect(payload.stepText).toBe("Выберите один вариант из списка");
+  expect(payload.metadata.courseTitle).toBe("Python для собеседования");
+  expect(payload.metadata.lessonTitle).toBe("5.2 Тест: Списки");
+  expect(payload.comments).toEqual([
+    "Вообще-то, ни сколько, если только не поставить pass в теле цикла!",
+    "Здесь нет правильного ответа, поправьте условие.",
+    "30 минут и прокси в телеграмм и стабильный VPN (на ПК) настроил, едем дальше.",
+    "не получается, ввожу в поиске @BotFather и выскакивает множество чужих ботов. как свой сделать?",
+    "Хорошее объяснение!",
+    "Ясно, коротко, красиво! Однозначно лайк!",
+  ]);
+  expect(payload.context.ids).toMatchObject({
+    lessonId: "1492667",
+    stepPosition: "5",
+    unitId: "1512554",
+  });
+  expect(payload.context.task).toMatchObject({
+    kind: "choice",
+    hasAnswerControls: true,
+    answerOptionsCount: 4,
+  });
+  expect(payload.context.stats.extractionVersion).toBe("dom-v2");
+});
+
+test("extracts Stepik comment replies as structured threads", async ({ page }) => {
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik threaded comments mock</title>
+        <style>
+          body { margin: 0; font-family: sans-serif; }
+          .step-inner__text, .discussions__comment-widget, .comments-comment, .comments-comment__viewer { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="step-inner__text">Как найти официального BotFather?</section>
+          <div class="ember-view discussions__comment-widget">
+            <div class="comments-card">
+              <div class="comments-comment">
+                <span class="user-avatar comments-user-avatar"><img alt="User avatar" /></span>
+                <div class="comments-comment__main">
+                  <div class="comments-comment__header">
+                    <div class="comments-comment__titles">
+                      <div class="comments-user-badge">
+                        <a class="comments-user-badge__name">Гомзяков Вадим</a>
+                      </div>
+                      <time class="comments-comment__date" datetime="2026-07-02T19:11:13.000Z">6 дней назад</time>
+                    </div>
+                  </div>
+                  <div class="comments-comment__content">
+                    <div class="html-content rich-text-viewer comments-comment__viewer">
+                      <span><p>не получается, ввожу в поиске&nbsp;@BotFather&nbsp; и выскакивает множество чужих ботов. как свой сделать?</p></span>
+                    </div>
+                  </div>
+                  <div class="comments-comment__footer">
+                    <button type="button">Ответить</button>
+                    <button type="button">Скрыть ответы</button>
+                  </div>
+                  <div class="comments-card__replies" data-has-replies="">
+                    <div class="comment-reply__container discussions__comment-widget">
+                      <div class="comments-comment">
+                        <div class="comments-comment__main">
+                          <div class="comments-comment__header">
+                            <div class="comments-comment__titles">
+                              <div class="comments-user-badge">
+                                <a class="comments-user-badge__name">Саид-Магомед Гайрабеков</a>
+                              </div>
+                              <time class="comments-comment__date" datetime="2026-07-04T12:47:03.000Z">4 дня назад</time>
+                            </div>
+                          </div>
+                          <div class="comments-comment__content">
+                            <div class="html-content rich-text-viewer comments-comment__viewer">
+                              <span><p>@Гомзяков_Вадим, в телеграме в поиске введите @BotFather, вам высветится официальный бот с галочкой рядом с именем и 9 млн пользователей</p></span>
+                            </div>
+                          </div>
+                          <div class="comments-comment__footer">
+                            <button type="button">Ответить</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as {
+    comments: string[];
+    commentThreads: Array<{
+      root: {
+        author?: string;
+        relativeTime?: string;
+        text: string;
+        mentions: string[];
+      };
+      replies: Array<{
+        author?: string;
+        relativeTime?: string;
+        text: string;
+        mentions: string[];
+      }>;
+    }>;
+    context: {
+      stats: {
+        commentThreadsCount: number;
+        repliesCount: number;
+      };
+    };
+  };
+
+  expect(payload.comments).toEqual([
+    "не получается, ввожу в поиске @BotFather и выскакивает множество чужих ботов. как свой сделать?",
+    "@Гомзяков_Вадим, в телеграме в поиске введите @BotFather, вам высветится официальный бот с галочкой рядом с именем и 9 млн пользователей",
+  ]);
+  expect(payload.commentThreads).toEqual([
+    {
+      root: {
+        author: "Гомзяков Вадим",
+        relativeTime: "6 дней назад",
+        text: "не получается, ввожу в поиске @BotFather и выскакивает множество чужих ботов. как свой сделать?",
+        mentions: ["@BotFather"],
+      },
+      replies: [
+        {
+          author: "Саид-Магомед Гайрабеков",
+          relativeTime: "4 дня назад",
+          text: "@Гомзяков_Вадим, в телеграме в поиске введите @BotFather, вам высветится официальный бот с галочкой рядом с именем и 9 млн пользователей",
+          mentions: ["@Гомзяков_Вадим", "@BotFather"],
+        },
+      ],
+    },
+  ]);
+  expect(payload.context.stats.commentThreadsCount).toBe(1);
+  expect(payload.context.stats.repliesCount).toBe(1);
+});
+
+test("opens the sidebar and renders collected comments", async ({ page }) => {
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik mock</title>
+        <style>
+          body { margin: 0; min-height: 900px; font-family: sans-serif; }
+          .step-inner__text, .comment__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1 class="lesson-title">5.2 Тест: Списки</h1>
+          <section class="step-inner__text">Выберите один вариант из списка</section>
+          <article class="comments__comment">
+            <span class="comment__author">Anonymous 919256933</span>
+            <span class="comment__date">6 месяцев назад</span>
+            <p class="comment__text">Комментарий для проверки сайдбара.</p>
+            <button type="button">Ответить</button>
+          </article>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    const trigger = shadow?.querySelector<HTMLButtonElement>(".sc-trigger");
+    trigger?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+    });
+  }).toContain("Данные собраны");
+
+  const sidebarText = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+  });
+
+  expect(sidebarText).toContain("Stepik Copilot");
+  expect(sidebarText).toContain("Данные собраны");
+  expect(sidebarText).toContain("Выберите один вариант из списка");
+  expect(sidebarText).toContain("Комментарий для проверки сайдбара.");
+});
