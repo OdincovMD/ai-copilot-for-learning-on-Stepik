@@ -1,11 +1,16 @@
+import type { ContextPack } from "./contextPack";
 import type { StepPayload } from "./stepPayload";
 
+type SidebarStateBase = {
+  contextPack?: ContextPack;
+};
+
 export type SidebarState =
-  | { status: "idle"; payload?: StepPayload }
-  | { status: "collecting"; payload?: StepPayload }
-  | { status: "ready"; payload: StepPayload }
-  | { status: "empty"; payload?: StepPayload }
-  | { status: "error"; message: string; payload?: StepPayload };
+  | (SidebarStateBase & { status: "idle"; payload?: StepPayload })
+  | (SidebarStateBase & { status: "collecting"; payload?: StepPayload })
+  | (SidebarStateBase & { status: "ready"; payload: StepPayload })
+  | (SidebarStateBase & { status: "empty"; payload?: StepPayload })
+  | (SidebarStateBase & { status: "error"; message: string; payload?: StepPayload });
 
 type SidebarController = {
   setState: (nextState: SidebarState) => void;
@@ -79,11 +84,19 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     drawer.setAttribute("aria-hidden", String(!isOpen));
 
     const header = createElement("header", "sc-header");
+    const brandMark = createElement("div", "sc-brand-mark");
+    brandMark.textContent = "S";
+
     const titleWrap = createElement("div", "sc-title-wrap");
     const title = createElement("div", "sc-title");
     title.textContent = "Stepik Copilot";
+    const subtitle = createElement("div", "sc-subtitle");
+    subtitle.textContent = getHeaderSubtitle(state);
     const status = createStatus();
-    titleWrap.append(title, status);
+    titleWrap.append(title, subtitle, status);
+
+    const titleGroup = createElement("div", "sc-title-group");
+    titleGroup.append(brandMark, titleWrap);
 
     const closeButton = createElement("button", "sc-icon-button") as HTMLButtonElement;
     closeButton.type = "button";
@@ -94,19 +107,20 @@ export function createSidebar(options: SidebarOptions): SidebarController {
       render();
     });
 
-    header.append(titleWrap, closeButton);
+    header.append(titleGroup, closeButton);
 
     const body = createElement("div", "sc-body");
     appendStateContent(body);
 
     const actions = createElement("div", "sc-actions");
     const payload = state.payload;
+    const secondaryActions = createElement("div", "sc-secondary-actions");
     if (payload?.stepMarkdown) {
-      const copyButton = createElement("button", `sc-copy is-${copyState}`) as HTMLButtonElement;
+      const copyButton = createElement("button", `sc-copy sc-secondary-button is-${copyState}`) as HTMLButtonElement;
       copyButton.type = "button";
       copyButton.append(createIcon(copyState === "copied" ? "check" : "copy"), document.createTextNode(getCopyButtonLabel(copyState)));
       copyButton.addEventListener("click", () => copyMarkdown(payload.stepMarkdown));
-      actions.append(copyButton);
+      secondaryActions.append(copyButton);
     }
 
     const refreshButton = createElement("button", "sc-refresh") as HTMLButtonElement;
@@ -115,6 +129,9 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     refreshButton.append(createIcon("refresh"), document.createTextNode("Обновить данные"));
     refreshButton.addEventListener("click", options.onRefresh);
     actions.append(refreshButton);
+    if (secondaryActions.childElementCount > 0) {
+      actions.append(secondaryActions);
+    }
 
     const footer = createElement("footer", "sc-footer");
     const version = createElement("span");
@@ -178,10 +195,11 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     const fragment = document.createDocumentFragment();
 
     fragment.append(
-      createSection("Контекст", createContextList(payload)),
+      createOverview(payload, state.contextPack),
+      createSection("Контекст", createContextView(payload, state.contextPack)),
       createSection("Текст шага", createStepContentView(payload)),
       createSection("Комментарии", createCommentsView(payload)),
-      createSection("Технически", createTechnicalList(payload)),
+      createTechnicalDisclosure(payload),
     );
 
     return fragment;
@@ -209,7 +227,75 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   }
 }
 
-function createContextList(payload: StepPayload): HTMLElement {
+function createContextView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
+  const wrapper = createElement("div", "sc-context");
+  wrapper.append(createContextList(payload, contextPack));
+
+  if (contextPack) {
+    wrapper.append(createPreviousStepsView(contextPack));
+  }
+
+  return wrapper;
+}
+
+function createOverview(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
+  const overview = createElement("section", "sc-overview");
+  const intro = createElement("div", "sc-overview-intro");
+  const title = createElement("div", "sc-overview-title");
+  title.textContent = getOverviewTitle(payload, contextPack);
+  const description = createElement("p", "sc-overview-text");
+  description.textContent = getOverviewDescription(payload, contextPack);
+  intro.append(title, description);
+
+  const metrics = createElement("div", "sc-metrics");
+  metrics.append(
+    createMetric("Контекст", `${contextPack?.stats.includedPreviousSteps ?? 0}`, "пред. шагов"),
+    createMetric("Комментарии", `${payload.comments.length}`, payload.commentThreads.length > 0 ? "в тредах" : "видимых"),
+    createMetric("Markdown", formatCompactNumber(payload.stepMarkdown.length), "символов"),
+  );
+
+  overview.append(intro, metrics);
+
+  return overview;
+}
+
+function createMetric(labelText: string, valueText: string, captionText: string): HTMLElement {
+  const metric = createElement("div", "sc-metric");
+  const label = createElement("div", "sc-metric-label");
+  label.textContent = labelText;
+  const value = createElement("div", "sc-metric-value");
+  value.textContent = valueText;
+  const caption = createElement("div", "sc-metric-caption");
+  caption.textContent = captionText;
+  metric.append(label, value, caption);
+
+  return metric;
+}
+
+function getOverviewTitle(payload: StepPayload, contextPack: ContextPack | undefined): string {
+  if (!payload.stepText.trim()) {
+    return "Жду данные шага";
+  }
+
+  if ((contextPack?.stats.includedPreviousSteps ?? 0) > 0) {
+    return "Контекст урока собран";
+  }
+
+  return "Текущий шаг собран";
+}
+
+function getOverviewDescription(payload: StepPayload, contextPack: ContextPack | undefined): string {
+  const taskKind = payload.context.task.kind === "unknown" ? "тип шага не определен" : getTaskKindLabel(payload.context.task.kind);
+  const previousStepsCount = contextPack?.stats.includedPreviousSteps ?? 0;
+
+  if (previousStepsCount > 0) {
+    return `${taskKind}, ${previousStepsCount} предыдущих шагов в локальном контексте.`;
+  }
+
+  return `${taskKind}, предыдущие шаги появятся после посещения ранних шагов урока.`;
+}
+
+function createContextList(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
   const list = createElement("dl", "sc-kv-list");
   const metadata = payload.metadata;
   const context = payload.context;
@@ -219,11 +305,47 @@ function createContextList(payload: StepPayload): HTMLElement {
   appendKeyValue(list, "Шаг", metadata.stepTitle);
   appendKeyValue(list, "Заголовок", payload.title);
   appendKeyValue(list, "Тип", getTaskKindLabel(context.task.kind));
+  appendKeyValue(list, "Источник", contextPack ? "посещенные страницы" : "текущая страница");
+  appendKeyValue(list, "Предыдущие шаги", contextPack ? `${contextPack.stats.includedPreviousSteps}` : "0");
   appendKeyValue(list, "Lesson ID", context.ids.lessonId);
   appendKeyValue(list, "Unit ID", context.ids.unitId);
   appendKeyValue(list, "Позиция", context.ids.stepPosition);
 
   return list;
+}
+
+function createPreviousStepsView(contextPack: ContextPack): HTMLElement {
+  const wrapper = createElement("div", "sc-context-previous");
+  const title = createElement("div", "sc-context-subtitle");
+  title.textContent = "Предыдущие посещенные шаги";
+  wrapper.append(title);
+
+  if (contextPack.previousSteps.length === 0) {
+    wrapper.append(createParagraph("Пока нет посещенных предыдущих шагов этого урока.", "sc-muted"));
+    return wrapper;
+  }
+
+  const list = createElement("ol", "sc-context-steps");
+  contextPack.previousSteps.forEach((step) => {
+    const item = createElement("li", "sc-context-step");
+    const position = step.context.ids.stepPosition ? `Шаг ${step.context.ids.stepPosition}` : "Шаг";
+    const heading = createElement("div", "sc-context-step-title");
+    heading.textContent = `${position}: ${step.title || step.metadata.stepTitle || step.url}`;
+
+    const meta = createElement("div", "sc-context-step-meta");
+    meta.textContent = `${step.stepMarkdown.length} MD символов`;
+
+    item.append(heading, meta);
+    list.append(item);
+  });
+
+  wrapper.append(list);
+
+  if (contextPack.stats.truncated) {
+    wrapper.append(createParagraph("Контекст ограничен по числу шагов или символов.", "sc-muted"));
+  }
+
+  return wrapper;
 }
 
 function createTechnicalList(payload: StepPayload): HTMLElement {
@@ -244,6 +366,23 @@ function createTechnicalList(payload: StepPayload): HTMLElement {
   return list;
 }
 
+function createTechnicalDisclosure(payload: StepPayload): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "sc-technical";
+
+  const summary = document.createElement("summary");
+  summary.className = "sc-technical-summary";
+  const title = createElement("span");
+  title.textContent = "Технически";
+  const meta = createElement("span", "sc-technical-meta");
+  meta.textContent = `${payload.context.stats.extractionVersion} · ${formatCollectedAt(payload.context.stats.collectedAt)}`;
+  summary.append(title, meta, createIcon("chevron-left"));
+
+  details.append(summary, createTechnicalList(payload));
+
+  return details;
+}
+
 function getTaskKindLabel(kind: StepPayload["context"]["task"]["kind"]): string {
   const labels: Record<StepPayload["context"]["task"]["kind"], string> = {
     choice: "тест",
@@ -258,6 +397,14 @@ function getTaskKindLabel(kind: StepPayload["context"]["task"]["kind"]): string 
 
 function formatOptionalNumber(value: number | undefined): string | undefined {
   return value === undefined ? undefined : `${value}`;
+}
+
+function formatCompactNumber(value: number): string {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  }
+
+  return `${value}`;
 }
 
 function formatCollectedAt(value: string): string {
@@ -284,6 +431,22 @@ function getCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
   }
 
   return "Скопировать MD";
+}
+
+function getHeaderSubtitle(state: SidebarState): string {
+  if (state.status === "ready" && state.contextPack) {
+    return `${state.contextPack.stats.includedPreviousSteps} предыдущих шагов в контексте`;
+  }
+
+  if (state.status === "ready") {
+    return "Текущий шаг готов к работе";
+  }
+
+  if (state.status === "collecting") {
+    return "Синхронизирую видимый DOM";
+  }
+
+  return "Локальный DOM-прототип";
 }
 
 function createStepContentView(payload: StepPayload): HTMLElement {
@@ -582,18 +745,22 @@ function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh
 const SIDEBAR_CSS = `
   :host {
     --sc-bg: #ffffff;
-    --sc-text: #161a1d;
-    --sc-muted: #687076;
-    --sc-soft: #f6f8f7;
-    --sc-border: #dfe5e1;
-    --sc-border-strong: #c8d3ce;
-    --sc-green: #1f9d61;
-    --sc-green-dark: #167a49;
-    --sc-green-soft: #e9f7ef;
+    --sc-ink: #11181c;
+    --sc-text: #1a2227;
+    --sc-muted: #66747c;
+    --sc-faint: #8b989f;
+    --sc-soft: #f5f8f7;
+    --sc-soft-strong: #eef4f1;
+    --sc-border: #dde7e2;
+    --sc-border-strong: #bfd0c8;
+    --sc-green: #15915a;
+    --sc-green-dark: #0d6f43;
+    --sc-green-soft: #e6f6ee;
+    --sc-blue: #256d85;
     --sc-error: #b5473a;
-    --sc-shadow: 0 18px 48px rgba(22, 26, 29, 0.18), 0 2px 10px rgba(22, 26, 29, 0.08);
+    --sc-shadow: 0 24px 70px rgba(17, 24, 28, 0.2), 0 4px 16px rgba(17, 24, 28, 0.1);
     color-scheme: light;
-    font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: "IBM Plex Sans", "Aptos", "Segoe UI", "Helvetica Neue", sans-serif;
   }
 
   *, *::before, *::after {
@@ -603,7 +770,7 @@ const SIDEBAR_CSS = `
   .sc-shell {
     all: initial;
     color: var(--sc-text);
-    font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: "IBM Plex Sans", "Aptos", "Segoe UI", "Helvetica Neue", sans-serif;
     position: fixed;
     inset: 0 0 auto auto;
     z-index: 2147483647;
@@ -619,32 +786,32 @@ const SIDEBAR_CSS = `
     position: fixed;
     top: min(54vh, 520px);
     right: 0;
-    width: 54px;
-    min-height: 96px;
+    width: 50px;
+    min-height: 112px;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    padding: 10px 8px;
+    gap: 12px;
+    padding: 12px 7px;
     color: var(--sc-green-dark);
-    background: var(--sc-bg);
+    background: linear-gradient(180deg, #ffffff 0%, #f7fbf9 100%);
     border: 1px solid var(--sc-border-strong);
     border-right: 0;
-    border-radius: 8px 0 0 8px;
-    box-shadow: 0 8px 24px rgba(22, 26, 29, 0.16);
+    border-radius: 12px 0 0 12px;
+    box-shadow: 0 12px 32px rgba(17, 24, 28, 0.16);
     cursor: pointer;
-    transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, right 180ms cubic-bezier(0.2, 0, 0, 1);
   }
 
   .sc-trigger:hover {
-    background: var(--sc-green-soft);
-    transform: translateX(-2px);
-    box-shadow: 0 10px 28px rgba(22, 26, 29, 0.2);
+    background: linear-gradient(180deg, #ffffff 0%, var(--sc-green-soft) 100%);
+    transform: translateX(-3px);
+    box-shadow: 0 14px 38px rgba(17, 24, 28, 0.2);
   }
 
   .sc-trigger.is-open {
-    right: 380px;
+    right: 408px;
   }
 
   .sc-trigger-mark {
@@ -652,9 +819,10 @@ const SIDEBAR_CSS = `
     height: 28px;
     display: grid;
     place-items: center;
-    border-radius: 50%;
+    border-radius: 9px;
     color: #ffffff;
-    background: var(--sc-green-dark);
+    background: linear-gradient(145deg, var(--sc-green-dark), #18a66a);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 5px 12px rgba(13, 111, 67, 0.24);
     font-size: 14px;
     font-weight: 760;
     line-height: 1;
@@ -665,14 +833,16 @@ const SIDEBAR_CSS = `
     position: fixed;
     top: 0;
     right: 0;
-    width: min(380px, calc(100vw - 28px));
+    width: min(408px, calc(100vw - 28px));
     height: 100vh;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto auto;
     color: var(--sc-text);
-    background: var(--sc-bg);
+    background:
+      linear-gradient(180deg, rgba(245, 248, 247, 0.92) 0, rgba(255, 255, 255, 0) 168px),
+      var(--sc-bg);
     border-left: 1px solid var(--sc-border-strong);
-    border-radius: 6px 0 0 6px;
+    border-radius: 8px 0 0 8px;
     box-shadow: var(--sc-shadow);
     transform: translateX(102%);
     transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
@@ -688,26 +858,68 @@ const SIDEBAR_CSS = `
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
-    padding: 20px 20px 16px;
+    padding: 18px 18px 16px;
     border-bottom: 1px solid var(--sc-border);
   }
 
+  .sc-title-group {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
+  }
+
+  .sc-brand-mark {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    color: #ffffff;
+    background: linear-gradient(145deg, var(--sc-green-dark), #19a86a);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 18px rgba(13, 111, 67, 0.2);
+    font-size: 16px;
+    font-weight: 780;
+    line-height: 1;
+    letter-spacing: 0;
+  }
+
+  .sc-title-wrap {
+    min-width: 0;
+  }
+
   .sc-title {
-    color: var(--sc-text);
-    font-size: 17px;
-    font-weight: 740;
+    color: var(--sc-ink);
+    font-size: 16px;
+    font-weight: 760;
     line-height: 1.2;
     letter-spacing: 0;
+  }
+
+  .sc-subtitle {
+    margin-top: 3px;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 540;
+    line-height: 1.32;
+    overflow-wrap: anywhere;
   }
 
   .sc-status {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 14px;
+    width: max-content;
+    max-width: 100%;
+    gap: 7px;
+    margin-top: 10px;
+    padding: 4px 8px 4px 6px;
     color: var(--sc-muted);
-    font-size: 13px;
-    font-weight: 680;
+    background: var(--sc-soft);
+    border: 1px solid var(--sc-border);
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
     line-height: 1.25;
   }
 
@@ -721,20 +933,20 @@ const SIDEBAR_CSS = `
   }
 
   .sc-icon-button {
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     display: grid;
     place-items: center;
     padding: 0;
     color: var(--sc-text);
     background: transparent;
     border: 0;
-    border-radius: 6px;
+    border-radius: 9px;
     cursor: pointer;
   }
 
   .sc-icon-button:hover {
-    background: var(--sc-soft);
+    background: var(--sc-soft-strong);
   }
 
   .sc-icon {
@@ -753,15 +965,15 @@ const SIDEBAR_CSS = `
 
   .sc-body {
     min-height: 0;
-    padding: 18px 20px;
+    padding: 16px 18px;
     overflow: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--sc-border-strong) transparent;
   }
 
   .sc-section {
-    padding: 0 0 18px;
-    margin: 0 0 18px;
+    padding: 0 0 17px;
+    margin: 0 0 17px;
     border-bottom: 1px solid var(--sc-border);
   }
 
@@ -770,35 +982,168 @@ const SIDEBAR_CSS = `
   }
 
   .sc-section-title {
-    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 11px;
     color: var(--sc-text);
-    font-size: 14px;
-    font-weight: 740;
+    font-size: 12px;
+    font-weight: 780;
+    line-height: 1.25;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .sc-section-title::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--sc-green);
+    box-shadow: 0 0 0 3px var(--sc-green-soft);
+  }
+
+  .sc-overview {
+    padding: 14px;
+    margin: 0 0 18px;
+    background:
+      linear-gradient(135deg, rgba(230, 246, 238, 0.95), rgba(245, 248, 247, 0.62)),
+      #ffffff;
+    border: 1px solid rgba(191, 208, 200, 0.82);
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(17, 24, 28, 0.06);
+  }
+
+  .sc-overview-intro {
+    min-width: 0;
+  }
+
+  .sc-overview-title {
+    color: var(--sc-ink);
+    font-size: 15px;
+    font-weight: 780;
     line-height: 1.25;
     letter-spacing: 0;
   }
 
+  .sc-overview-text {
+    margin: 5px 0 0;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 520;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 13px;
+  }
+
+  .sc-metric {
+    min-width: 0;
+    padding: 9px 8px 8px;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(221, 231, 226, 0.86);
+    border-radius: 7px;
+  }
+
+  .sc-metric-label {
+    color: var(--sc-faint);
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.2;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sc-metric-value {
+    margin-top: 5px;
+    color: var(--sc-ink);
+    font-size: 18px;
+    font-weight: 780;
+    line-height: 1;
+  }
+
+  .sc-metric-caption {
+    margin-top: 4px;
+    color: var(--sc-muted);
+    font-size: 10px;
+    font-weight: 560;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+
   .sc-kv-list {
     display: grid;
-    grid-template-columns: minmax(84px, 0.42fr) minmax(0, 1fr);
-    gap: 9px 14px;
+    grid-template-columns: minmax(92px, 0.44fr) minmax(0, 1fr);
+    gap: 8px 14px;
     margin: 0;
     color: var(--sc-text);
-    font-size: 13px;
+    font-size: 12px;
     line-height: 1.35;
   }
 
   .sc-kv-list dt {
     margin: 0;
     color: var(--sc-muted);
-    font-weight: 560;
+    font-weight: 620;
   }
 
   .sc-kv-list dd {
     min-width: 0;
     margin: 0;
     overflow-wrap: anywhere;
-    font-weight: 520;
+    font-weight: 560;
+  }
+
+  .sc-context {
+    display: grid;
+    gap: 14px;
+  }
+
+  .sc-context-previous {
+    display: grid;
+    gap: 9px;
+    padding-top: 2px;
+  }
+
+  .sc-context-subtitle {
+    color: var(--sc-text);
+    font-size: 12px;
+    font-weight: 720;
+    line-height: 1.3;
+  }
+
+  .sc-context-steps {
+    display: grid;
+    gap: 9px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .sc-context-step {
+    margin: 0;
+    padding: 0 0 0 13px;
+    border-left: 2px solid var(--sc-green);
+  }
+
+  .sc-context-step-title {
+    color: var(--sc-text);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-context-step-meta {
+    margin-top: 2px;
+    color: var(--sc-muted);
+    font-size: 11px;
+    line-height: 1.3;
   }
 
   .sc-step-text,
@@ -818,7 +1163,7 @@ const SIDEBAR_CSS = `
 
   .sc-markdown {
     display: grid;
-    gap: 10px;
+    gap: 11px;
     color: var(--sc-text);
     font-size: 13px;
     line-height: 1.55;
@@ -865,7 +1210,7 @@ const SIDEBAR_CSS = `
     max-width: 100%;
     padding: 10px 11px;
     color: #22312b;
-    background: #f3f6f5;
+    background: #f2f6f4;
     border: 1px solid var(--sc-border);
     border-radius: 6px;
     overflow: auto;
@@ -906,7 +1251,7 @@ const SIDEBAR_CSS = `
 
   .sc-comments {
     display: grid;
-    gap: 10px;
+    gap: 11px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -915,7 +1260,7 @@ const SIDEBAR_CSS = `
   .sc-comment {
     position: relative;
     margin: 0;
-    padding: 0 0 0 16px;
+    padding: 0 0 0 15px;
     color: var(--sc-text);
     font-size: 13px;
     line-height: 1.48;
@@ -935,7 +1280,7 @@ const SIDEBAR_CSS = `
 
   .sc-comment-threads {
     display: grid;
-    gap: 14px;
+    gap: 15px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -948,7 +1293,7 @@ const SIDEBAR_CSS = `
 
   .sc-comment-entry {
     position: relative;
-    padding-left: 14px;
+    padding-left: 15px;
   }
 
   .sc-comment-entry::before {
@@ -1007,7 +1352,7 @@ const SIDEBAR_CSS = `
     padding: 14px;
     background: var(--sc-soft);
     border: 1px solid var(--sc-border);
-    border-radius: 6px;
+    border-radius: 8px;
   }
 
   .sc-notice-title {
@@ -1021,11 +1366,19 @@ const SIDEBAR_CSS = `
   .sc-actions {
     display: grid;
     gap: 10px;
-    padding: 16px 20px 20px;
+    padding: 14px 18px 18px;
+    background: rgba(255, 255, 255, 0.92);
     border-top: 1px solid var(--sc-border);
   }
 
-  .sc-copy {
+  .sc-secondary-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .sc-copy,
+  .sc-secondary-button {
     width: 100%;
     min-height: 38px;
     display: inline-flex;
@@ -1036,9 +1389,9 @@ const SIDEBAR_CSS = `
     color: var(--sc-text);
     background: var(--sc-bg);
     border: 1px solid var(--sc-border-strong);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     line-height: 1.2;
     letter-spacing: 0;
@@ -1069,21 +1422,21 @@ const SIDEBAR_CSS = `
     gap: 9px;
     padding: 10px 16px;
     color: #ffffff;
-    background: var(--sc-green);
-    border: 1px solid var(--sc-green);
-    border-radius: 6px;
-    box-shadow: 0 8px 20px rgba(31, 157, 97, 0.22);
+    background: linear-gradient(135deg, var(--sc-green), var(--sc-green-dark));
+    border: 1px solid var(--sc-green-dark);
+    border-radius: 8px;
+    box-shadow: 0 9px 22px rgba(21, 145, 90, 0.24);
     cursor: pointer;
-    font-size: 14px;
-    font-weight: 720;
+    font-size: 13px;
+    font-weight: 760;
     line-height: 1.2;
     letter-spacing: 0;
     transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
   }
 
   .sc-refresh:hover:not(:disabled) {
-    background: var(--sc-green-dark);
-    border-color: var(--sc-green-dark);
+    background: linear-gradient(135deg, #18a166, var(--sc-green-dark));
+    border-color: #0a5e38;
     transform: translateY(-1px);
   }
 
@@ -1098,9 +1451,9 @@ const SIDEBAR_CSS = `
     justify-content: space-between;
     gap: 12px;
     min-width: 0;
-    padding: 12px 20px;
+    padding: 11px 18px;
     color: #879198;
-    background: #f8faf9;
+    background: #f8fbfa;
     border-top: 1px solid var(--sc-border);
     font-size: 12px;
     line-height: 1.25;
@@ -1113,6 +1466,68 @@ const SIDEBAR_CSS = `
     white-space: nowrap;
   }
 
+  .sc-technical {
+    margin: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .sc-technical-summary {
+    min-height: 40px;
+    display: grid;
+    grid-template-columns: 7px max-content minmax(0, 1fr) 18px;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    color: var(--sc-text);
+    cursor: pointer;
+    list-style: none;
+    font-size: 12px;
+    font-weight: 780;
+    line-height: 1.25;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .sc-technical-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .sc-technical-summary .sc-icon {
+    color: var(--sc-muted);
+    transform: rotate(-90deg);
+    transition: transform 160ms ease;
+  }
+
+  .sc-technical[open] .sc-technical-summary .sc-icon {
+    transform: rotate(90deg);
+  }
+
+  .sc-technical-summary::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--sc-border-strong);
+  }
+
+  .sc-technical-meta {
+    min-width: 0;
+    color: var(--sc-muted);
+    font-size: 11px;
+    font-weight: 560;
+    text-align: right;
+    text-transform: none;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sc-technical .sc-kv-list {
+    padding-top: 8px;
+  }
+
   @keyframes sc-spin {
     to {
       transform: rotate(360deg);
@@ -1121,7 +1536,7 @@ const SIDEBAR_CSS = `
 
   @media (max-width: 520px) {
     .sc-trigger.is-open {
-      right: min(380px, calc(100vw - 28px));
+      right: min(408px, calc(100vw - 28px));
     }
 
     .sc-header,
@@ -1130,6 +1545,10 @@ const SIDEBAR_CSS = `
     .sc-footer {
       padding-left: 16px;
       padding-right: 16px;
+    }
+
+    .sc-metrics {
+      grid-template-columns: 1fr;
     }
   }
 

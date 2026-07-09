@@ -1,7 +1,9 @@
+import { cacheStepAndBuildContextPack, type ContextPack } from "./contextPack";
 import { createSidebar, type SidebarState } from "./sidebar";
 import { extractStepPayload } from "./stepPayload";
 
 const LOG_PREFIX = "[Stepik Copilot DOM Prototype]";
+const CONTEXT_LOG_PREFIX = "[Stepik Copilot Context Pack]";
 const DEBOUNCE_MS = 500;
 const RETRY_MS = 750;
 const MAX_WAIT_MS = 20_000;
@@ -13,15 +15,19 @@ let retryTimer: number | undefined;
 let pageStartedAt = Date.now();
 let lastLoggedSignature: string | undefined;
 let lastPayload: ReturnType<typeof extractStepPayload> | undefined;
+let lastContextPack: ContextPack | undefined;
+let collectionRunId = 0;
 
 const sidebar = createSidebar({
   onRefresh: () => {
-    sidebar.setState({ status: "collecting", payload: lastPayload });
+    sidebar.setState({ status: "collecting", payload: lastPayload, contextPack: lastContextPack });
     window.setTimeout(() => collectAndPublishPayload({ force: true }), MANUAL_REFRESH_DELAY_MS);
   },
 });
 
-function collectAndPublishPayload(options: { force?: boolean } = {}): void {
+async function collectAndPublishPayload(options: { force?: boolean } = {}): Promise<void> {
+  const runId = ++collectionRunId;
+
   try {
     const payload = extractStepPayload(document);
     const signature = createPayloadSignature(payload);
@@ -40,12 +46,19 @@ function collectAndPublishPayload(options: { force?: boolean } = {}): void {
       return;
     }
 
+    const contextPack = await cacheStepAndBuildContextPack(payload);
+    if (runId !== collectionRunId) {
+      return;
+    }
+
+    lastContextPack = contextPack;
     lastLoggedSignature = signature;
-    sidebar.setState(nextState);
+    sidebar.setState({ ...nextState, contextPack });
     console.log(LOG_PREFIX, payload);
+    console.log(CONTEXT_LOG_PREFIX, contextPack);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Неизвестная ошибка";
-    sidebar.setState({ status: "error", message, payload: lastPayload });
+    sidebar.setState({ status: "error", message, payload: lastPayload, contextPack: lastContextPack });
     console.error(LOG_PREFIX, message, error);
   }
 }
@@ -66,7 +79,7 @@ function watchClientSideNavigation(): void {
       lastUrl = window.location.href;
       pageStartedAt = Date.now();
       lastLoggedSignature = undefined;
-      sidebar.setState({ status: "collecting", payload: lastPayload });
+      sidebar.setState({ status: "collecting", payload: lastPayload, contextPack: lastContextPack });
       schedulePayloadCollection();
       return;
     }

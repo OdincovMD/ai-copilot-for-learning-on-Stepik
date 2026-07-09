@@ -1,8 +1,132 @@
 import { expect, test } from "@playwright/test";
 import path from "node:path";
+import {
+  buildContextPackFromCache,
+  CONTEXT_STORAGE_KEY,
+  createContextStepSnapshot,
+  createStepCacheKey,
+  type StepCache,
+} from "../src/contextPack";
+import type { StepPayload } from "../src/stepPayload";
 
 const DIST_CONTENT_SCRIPT = path.resolve("dist/content.js");
 const STEPIK_STEP_URL = "https://stepik.org/lesson/1492667/step/5?unit=1512554";
+
+function createMockStepPayload(options: {
+  lessonId?: string;
+  stepPosition: string;
+  unitId?: string;
+  stepMarkdown?: string;
+  title?: string;
+}): StepPayload {
+  const lessonId = options.lessonId ?? "100";
+  const stepMarkdown = options.stepMarkdown ?? `Материал шага ${options.stepPosition}`;
+
+  return {
+    url: `https://stepik.org/lesson/${lessonId}/step/${options.stepPosition}?unit=${options.unitId ?? `u${options.stepPosition}`}`,
+    title: options.title ?? `Шаг ${options.stepPosition}`,
+    stepText: stepMarkdown,
+    stepMarkdown,
+    stepContent: {
+      format: "markdown",
+      markdown: stepMarkdown,
+      plainText: stepMarkdown,
+    },
+    comments: [],
+    commentThreads: [],
+    metadata: {
+      courseTitle: "Тестовый курс",
+      lessonTitle: "Тестовый урок",
+      stepTitle: `Шаг ${options.stepPosition}`,
+    },
+    context: {
+      ids: {
+        lessonId,
+        stepPosition: options.stepPosition,
+        unitId: options.unitId,
+      },
+      page: {
+        hostname: "stepik.org",
+        path: `/lesson/${lessonId}/step/${options.stepPosition}`,
+        language: "ru",
+      },
+      task: {
+        kind: "unknown",
+        hasAnswerControls: false,
+        hasChoiceOptions: false,
+        hasCodeEditor: false,
+      },
+      stats: {
+        stepTextLength: stepMarkdown.length,
+        commentsCount: 0,
+        commentThreadsCount: 0,
+        repliesCount: 0,
+        collectedAt: "2026-07-09T00:00:00.000Z",
+        extractionVersion: "dom-v2",
+      },
+    },
+  };
+}
+
+function createStepCache(payloads: StepPayload[]): StepCache {
+  return Object.fromEntries(
+    payloads.map((payload, index) => {
+      return [createStepCacheKey(payload), createContextStepSnapshot(payload, `2026-07-09T00:00:0${index}.000Z`)];
+    }),
+  );
+}
+
+test("builds an empty context pack for the first visited step", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "1" });
+  const contextPack = buildContextPackFromCache(currentStep, {});
+
+  expect(contextPack.previousSteps).toEqual([]);
+  expect(contextPack.source).toBe("visited-cache");
+  expect(contextPack.stats).toMatchObject({
+    totalVisitedInLesson: 0,
+    includedPreviousSteps: 0,
+    truncated: false,
+  });
+});
+
+test("includes previous visited steps from the same lesson only", () => {
+  const previousStep = createMockStepPayload({ lessonId: "100", stepPosition: "1" });
+  const otherLessonStep = createMockStepPayload({ lessonId: "200", stepPosition: "1" });
+  const currentStep = createMockStepPayload({ lessonId: "100", stepPosition: "2" });
+  const contextPack = buildContextPackFromCache(currentStep, createStepCache([previousStep, otherLessonStep]));
+
+  expect(contextPack.previousSteps.map((step) => step.context.ids.stepPosition)).toEqual(["1"]);
+  expect(contextPack.previousSteps[0]).not.toHaveProperty("comments");
+  expect(contextPack.previousSteps[0]).not.toHaveProperty("commentThreads");
+});
+
+test("limits previous steps by nearest step positions", () => {
+  const visitedSteps = ["1", "2", "3", "4"].map((stepPosition) => createMockStepPayload({ stepPosition }));
+  const currentStep = createMockStepPayload({ stepPosition: "5" });
+  const contextPack = buildContextPackFromCache(currentStep, createStepCache(visitedSteps), {
+    maxPreviousSteps: 2,
+    maxCharacters: 10_000,
+  });
+
+  expect(contextPack.previousSteps.map((step) => step.context.ids.stepPosition)).toEqual(["3", "4"]);
+  expect(contextPack.stats.truncated).toBe(true);
+});
+
+test("limits previous step markdown by max characters", () => {
+  const previousStep = createMockStepPayload({
+    stepPosition: "2",
+    stepMarkdown: "0123456789ABCDEFGHIJ",
+  });
+  const currentStep = createMockStepPayload({ stepPosition: "3" });
+  const contextPack = buildContextPackFromCache(currentStep, createStepCache([previousStep]), {
+    maxPreviousSteps: 5,
+    maxCharacters: 10,
+  });
+
+  expect(contextPack.previousSteps).toHaveLength(1);
+  expect(contextPack.previousSteps[0].stepMarkdown).toBe("0123456789");
+  expect(contextPack.stats.truncated).toBe(true);
+});
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
   const payloadPromise = page.waitForEvent("console", async (message) => {
@@ -396,6 +520,72 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
   expect(sidebarText).toContain("Данные собраны");
   expect(sidebarText).toContain("Выберите один вариант из списка");
   expect(sidebarText).toContain("Комментарий для проверки сайдбара.");
+});
+
+test("renders previous visited steps from the context pack in the sidebar", async ({ page }) => {
+  const currentUrl = "https://stepik.org/lesson/200/step/2?unit=302";
+  const previousStep = createMockStepPayload({
+    lessonId: "200",
+    stepPosition: "1",
+    unitId: "301",
+    stepMarkdown: "## Первый шаг\n\nБазовый материал урока.",
+    title: "Первый шаг — Stepik",
+  });
+  const cache = createStepCache([previousStep]);
+
+  await page.route(currentUrl, async (route) => {
+    await route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `
+        <!doctype html>
+        <html lang="ru">
+          <head>
+            <title>Второй шаг — Stepik</title>
+            <style>
+              body { margin: 0; min-height: 900px; font-family: sans-serif; }
+              .lesson-title, .step-inner__text { display: block; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1 class="lesson-title">Урок с контекстом</h1>
+              <section class="step-inner__text">Материал второго шага.</section>
+            </main>
+          </body>
+        </html>
+      `,
+    });
+  });
+
+  await page.goto(currentUrl);
+  await page.evaluate(({ storageKey, storedCache }) => {
+    localStorage.setItem(storageKey, JSON.stringify(storedCache));
+  }, { storageKey: CONTEXT_STORAGE_KEY, storedCache: cache });
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-trigger")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+    });
+  }).toContain("Предыдущие посещенные шаги");
+
+  const sidebarText = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+  });
+
+  expect(sidebarText).toContain("посещенные страницы");
+  expect(sidebarText).toContain("Шаг 1");
+  expect(sidebarText).toContain("Первый шаг");
 });
 
 test("renders markdown formatting in the sidebar", async ({ page }) => {

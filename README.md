@@ -29,6 +29,7 @@ npm test
 
 - извлечение текста шага;
 - извлечение комментариев без автора, даты и кнопок;
+- сбор Context Pack из ранее посещенных шагов урока;
 - открытие сайдбара и отображение собранных данных.
 
 ## Локальная загрузка в Chrome
@@ -42,6 +43,18 @@ npm test
 7. Проверь, что открылся сайдбар с контекстом, текстом шага и комментариями.
 8. Для отладки можно открыть DevTools страницы и найти лог
    `[Stepik Copilot DOM Prototype]`.
+
+## Локальная загрузка в Firefox
+
+1. Выполни `npm run build`.
+2. Открой `about:debugging#/runtime/this-firefox`.
+3. Нажми `Load Temporary Add-on`.
+4. Выбери файл `dist/manifest.json`.
+5. Открой несколько шагов одного урока Stepik подряд.
+6. Нажми плавающую кнопку Stepik Copilot справа.
+7. В блоке `Контекст` проверь, что появились предыдущие посещенные шаги.
+8. В DevTools страницы можно найти два лога:
+   `[Stepik Copilot DOM Prototype]` и `[Stepik Copilot Context Pack]`.
 
 ## Текущий payload
 
@@ -120,10 +133,48 @@ type StepPayload = {
 тестовых шагов мы фиксируем тип задания и количество вариантов, но не готовим
 payload как источник прямого ответа.
 
+## Context Pack
+
+Расширение запоминает только те шаги, которые пользователь уже открыл сам.
+Для текущего шага собирается локальный пакет контекста из предыдущих посещенных
+шагов того же урока:
+
+```ts
+type ContextPack = {
+  currentStep: StepPayload;
+  previousSteps: Array<{
+    url: string;
+    title?: string;
+    stepText: string;
+    stepMarkdown: string;
+    metadata: StepPayload["metadata"];
+    context: Pick<StepPayload["context"], "ids" | "task">;
+    cachedAt: string;
+  }>;
+  source: "visited-cache";
+  limits: {
+    maxPreviousSteps: number;
+    maxCharacters: number;
+  };
+  stats: {
+    totalVisitedInLesson: number;
+    includedPreviousSteps: number;
+    truncated: boolean;
+  };
+};
+```
+
+`previousSteps` не содержит `comments` и `commentThreads`: комментарии остаются
+только у текущего шага, чтобы будущий AI-контекст не раздувался шумными
+переписками. Если открыть сразу середину урока, предыдущих шагов не будет —
+они появятся после посещения ранних шагов.
+
 ## Текущий UI
 
 - Плавающая кнопка справа открывает и закрывает сайдбар.
 - Кнопка `Обновить данные` повторно собирает payload из видимого DOM.
+- Блок `Контекст` показывает источник `посещенные страницы` и компактный
+  список предыдущих посещенных шагов текущего урока.
 - Блок `Текст шага` отображает Markdown-preview с заголовками, списками,
   ссылками и code blocks.
 - Кнопка `Скопировать MD` копирует Markdown текущего шага в буфер обмена.
