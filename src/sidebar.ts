@@ -1,4 +1,12 @@
 import type { ContextPack } from "./contextPack";
+import {
+  buildLearningRequest,
+  DEFAULT_LEARNING_MODE,
+  LEARNING_MODE_LABELS,
+  serializeLearningRequest,
+  type LearningMode,
+  type LearningRequest,
+} from "./learningRequest";
 import type { StepPayload } from "./stepPayload";
 
 type SidebarStateBase = {
@@ -21,6 +29,7 @@ type SidebarOptions = {
 };
 
 const HOST_ID = "stepik-copilot-root";
+const LEARNING_REQUEST_LOG_PREFIX = "[Stepik Copilot Learning Request]";
 
 export function createSidebar(options: SidebarOptions): SidebarController {
   document.getElementById(HOST_ID)?.remove();
@@ -39,10 +48,13 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   let isOpen = false;
   let state: SidebarState = { status: "idle" };
   let copyState: "idle" | "copied" | "error" = "idle";
+  let requestCopyState: "idle" | "copied" | "error" = "idle";
+  let learningMode: LearningMode = DEFAULT_LEARNING_MODE;
 
   function setState(nextState: SidebarState): void {
     state = nextState;
     copyState = "idle";
+    requestCopyState = "idle";
     render();
   }
 
@@ -196,6 +208,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
     fragment.append(
       createOverview(payload, state.contextPack),
+      createLearningRequestView(payload, state.contextPack),
       createSection("Контекст", createContextView(payload, state.contextPack)),
       createSection("Текст шага", createStepContentView(payload)),
       createSection("Комментарии", createCommentsView(payload)),
@@ -224,6 +237,74 @@ export function createSidebar(options: SidebarOptions): SidebarController {
       copyState = "idle";
       render();
     }, 1_600);
+  }
+
+  async function copyLearningRequest(serializedRequest: string, request: LearningRequest): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(serializedRequest);
+      requestCopyState = "copied";
+      console.log(LEARNING_REQUEST_LOG_PREFIX, request);
+    } catch {
+      requestCopyState = "error";
+    }
+
+    render();
+    window.setTimeout(() => {
+      requestCopyState = "idle";
+      render();
+    }, 1_600);
+  }
+
+  function setLearningMode(nextMode: LearningMode, request: LearningRequest): void {
+    learningMode = nextMode;
+    requestCopyState = "idle";
+    console.log(LEARNING_REQUEST_LOG_PREFIX, request);
+    render();
+  }
+
+  function createLearningRequestView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
+    const request = buildLearningRequest(payload, contextPack, learningMode);
+    const serializedRequest = serializeLearningRequest(request);
+    const wrapper = createElement("section", "sc-learning");
+
+    const header = createElement("div", "sc-learning-header");
+    const title = createElement("h2", "sc-section-title");
+    title.textContent = "Учебный запрос";
+    const summary = createElement("p", "sc-learning-summary");
+    summary.textContent = createLearningSummary(request);
+    header.append(title, summary);
+
+    const switcher = createElement("div", "sc-mode-switcher");
+    (Object.keys(LEARNING_MODE_LABELS) as LearningMode[]).forEach((mode) => {
+      const button = createElement("button", `sc-mode-button ${mode === learningMode ? "is-active" : ""}`) as HTMLButtonElement;
+      button.type = "button";
+      button.textContent = LEARNING_MODE_LABELS[mode];
+      button.setAttribute("aria-pressed", String(mode === learningMode));
+      button.addEventListener("click", () => setLearningMode(mode, buildLearningRequest(payload, contextPack, mode)));
+      switcher.append(button);
+    });
+
+    const meta = createElement("div", "sc-learning-meta");
+    meta.append(
+      createLearningMetaItem("Текущий шаг", `${request.input.currentStep.markdown.length} MD символов`),
+      createLearningMetaItem("Контекст", `${request.input.previousSteps.length} пред. шагов`),
+      createLearningMetaItem("Комментарии", `${request.input.comments.length}`),
+      createLearningMetaItem("Guardrails", "включены"),
+    );
+
+    const preview = createElement("pre", "sc-request-preview");
+    const code = createElement("code");
+    code.textContent = serializedRequest;
+    preview.append(code);
+
+    const copyButton = createElement("button", `sc-copy-request is-${requestCopyState}`) as HTMLButtonElement;
+    copyButton.type = "button";
+    copyButton.append(createIcon(requestCopyState === "copied" ? "check" : "copy"), document.createTextNode(getRequestCopyButtonLabel(requestCopyState)));
+    copyButton.addEventListener("click", () => copyLearningRequest(serializedRequest, request));
+
+    wrapper.append(header, switcher, meta, preview, copyButton);
+
+    return wrapper;
   }
 }
 
@@ -270,6 +351,25 @@ function createMetric(labelText: string, valueText: string, captionText: string)
   metric.append(label, value, caption);
 
   return metric;
+}
+
+function createLearningMetaItem(labelText: string, valueText: string): HTMLElement {
+  const item = createElement("div", "sc-learning-meta-item");
+  const label = createElement("span", "sc-learning-meta-label");
+  label.textContent = labelText;
+  const value = createElement("strong");
+  value.textContent = valueText;
+  item.append(label, value);
+
+  return item;
+}
+
+function createLearningSummary(request: LearningRequest): string {
+  const modeLabel = LEARNING_MODE_LABELS[request.mode].toLowerCase();
+  const previousSteps = request.input.previousSteps.length;
+  const comments = request.input.comments.length;
+
+  return `Локальный preview для режима «${modeLabel}»: текущий шаг, ${previousSteps} предыдущих шагов, ${comments} комментариев и anti-cheating guardrails.`;
 }
 
 function getOverviewTitle(payload: StepPayload, contextPack: ContextPack | undefined): string {
@@ -431,6 +531,18 @@ function getCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
   }
 
   return "Скопировать MD";
+}
+
+function getRequestCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
+  if (copyState === "copied") {
+    return "Запрос скопирован";
+  }
+
+  if (copyState === "error") {
+    return "Не удалось скопировать";
+  }
+
+  return "Скопировать запрос";
 }
 
 function getHeaderSubtitle(state: SidebarState): string {
@@ -1076,6 +1188,156 @@ const SIDEBAR_CSS = `
     overflow-wrap: anywhere;
   }
 
+  .sc-learning {
+    padding: 0 0 17px;
+    margin: 0 0 17px;
+    border-bottom: 1px solid var(--sc-border);
+  }
+
+  .sc-learning-header {
+    display: grid;
+    gap: 2px;
+    margin-bottom: 11px;
+  }
+
+  .sc-learning-header .sc-section-title {
+    margin-bottom: 0;
+  }
+
+  .sc-learning-summary {
+    margin: 0;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 520;
+    line-height: 1.42;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-mode-switcher {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 10px;
+    background: var(--sc-soft);
+    border: 1px solid var(--sc-border);
+    border-radius: 9px;
+  }
+
+  .sc-mode-button {
+    min-width: 0;
+    min-height: 32px;
+    padding: 7px 8px;
+    color: var(--sc-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 720;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .sc-mode-button:hover {
+    color: var(--sc-text);
+    background: rgba(255, 255, 255, 0.74);
+  }
+
+  .sc-mode-button.is-active {
+    color: var(--sc-green-dark);
+    background: #ffffff;
+    box-shadow: 0 3px 10px rgba(17, 24, 28, 0.08);
+  }
+
+  .sc-learning-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .sc-learning-meta-item {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    padding: 8px 9px;
+    background: #ffffff;
+    border: 1px solid var(--sc-border);
+    border-radius: 7px;
+  }
+
+  .sc-learning-meta-label {
+    color: var(--sc-faint);
+    font-size: 10px;
+    font-weight: 740;
+    line-height: 1.2;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sc-learning-meta-item strong {
+    min-width: 0;
+    color: var(--sc-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-request-preview {
+    max-height: 190px;
+    max-width: 100%;
+    margin: 0;
+    padding: 11px;
+    color: #22312b;
+    background: #f2f6f4;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+    overflow: auto;
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre;
+  }
+
+  .sc-copy-request {
+    width: 100%;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 9px 14px;
+    color: var(--sc-text);
+    background: var(--sc-bg);
+    border: 1px solid var(--sc-border-strong);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 740;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-copy-request:hover {
+    background: var(--sc-soft);
+    transform: translateY(-1px);
+  }
+
+  .sc-copy-request.is-copied {
+    color: var(--sc-green-dark);
+    border-color: rgba(31, 157, 97, 0.42);
+    background: var(--sc-green-soft);
+  }
+
+  .sc-copy-request.is-error {
+    color: var(--sc-error);
+  }
+
   .sc-kv-list {
     display: grid;
     grid-template-columns: minmax(92px, 0.44fr) minmax(0, 1fr);
@@ -1548,6 +1810,11 @@ const SIDEBAR_CSS = `
     }
 
     .sc-metrics {
+      grid-template-columns: 1fr;
+    }
+
+    .sc-learning-meta,
+    .sc-mode-switcher {
       grid-template-columns: 1fr;
     }
   }

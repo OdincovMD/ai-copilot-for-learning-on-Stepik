@@ -7,6 +7,12 @@ import {
   createStepCacheKey,
   type StepCache,
 } from "../src/contextPack";
+import {
+  buildLearningRequest,
+  DEFAULT_LEARNING_MODE,
+  serializeLearningRequest,
+  type LearningMode,
+} from "../src/learningRequest";
 import type { StepPayload } from "../src/stepPayload";
 
 const DIST_CONTENT_SCRIPT = path.resolve("dist/content.js");
@@ -18,9 +24,13 @@ function createMockStepPayload(options: {
   unitId?: string;
   stepMarkdown?: string;
   title?: string;
+  comments?: string[];
+  kind?: StepPayload["context"]["task"]["kind"];
 }): StepPayload {
   const lessonId = options.lessonId ?? "100";
   const stepMarkdown = options.stepMarkdown ?? `Материал шага ${options.stepPosition}`;
+  const kind = options.kind ?? "unknown";
+  const comments = options.comments ?? [];
 
   return {
     url: `https://stepik.org/lesson/${lessonId}/step/${options.stepPosition}?unit=${options.unitId ?? `u${options.stepPosition}`}`,
@@ -32,7 +42,7 @@ function createMockStepPayload(options: {
       markdown: stepMarkdown,
       plainText: stepMarkdown,
     },
-    comments: [],
+    comments,
     commentThreads: [],
     metadata: {
       courseTitle: "Тестовый курс",
@@ -51,14 +61,14 @@ function createMockStepPayload(options: {
         language: "ru",
       },
       task: {
-        kind: "unknown",
-        hasAnswerControls: false,
-        hasChoiceOptions: false,
-        hasCodeEditor: false,
+        kind,
+        hasAnswerControls: kind === "choice" || kind === "code",
+        hasChoiceOptions: kind === "choice",
+        hasCodeEditor: kind === "code",
       },
       stats: {
         stepTextLength: stepMarkdown.length,
-        commentsCount: 0,
+        commentsCount: comments.length,
         commentThreadsCount: 0,
         repliesCount: 0,
         collectedAt: "2026-07-09T00:00:00.000Z",
@@ -126,6 +136,61 @@ test("limits previous step markdown by max characters", () => {
   expect(contextPack.previousSteps).toHaveLength(1);
   expect(contextPack.previousSteps[0].stepMarkdown).toBe("0123456789");
   expect(contextPack.stats.truncated).toBe(true);
+});
+
+test("builds a learning request with current step, previous steps, and comments", () => {
+  const previousStep = createMockStepPayload({ stepPosition: "1", stepMarkdown: "## Предыдущий шаг" });
+  const currentStep = createMockStepPayload({
+    stepPosition: "2",
+    stepMarkdown: "## Текущий шаг\n\nМатериал для объяснения.",
+    comments: ["Первый полезный комментарий", "Второй комментарий"],
+  });
+  const contextPack = buildContextPackFromCache(currentStep, createStepCache([previousStep, currentStep]));
+  const request = buildLearningRequest(currentStep, contextPack, "explain");
+
+  expect(request).toMatchObject({
+    version: "learning-request-v1",
+    mode: "explain",
+    language: "ru",
+    guardrails: {
+      noDirectAnswers: true,
+      noMultipleChoiceOptionLeak: true,
+      focusOnUnderstanding: true,
+    },
+  });
+  expect(request.input.currentStep.markdown).toContain("Текущий шаг");
+  expect(request.input.previousSteps).toHaveLength(1);
+  expect(request.input.previousSteps[0].markdown).toContain("Предыдущий шаг");
+  expect(request.input.comments).toEqual(["Первый полезный комментарий", "Второй комментарий"]);
+  expect(serializeLearningRequest(request)).toContain('"version": "learning-request-v1"');
+});
+
+test("builds a learning request without comments", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "1", comments: [] });
+  const request = buildLearningRequest(currentStep, undefined, DEFAULT_LEARNING_MODE);
+
+  expect(request.input.comments).toEqual([]);
+  expect(request.input.previousSteps).toEqual([]);
+  expect(request.input.commentThreadsCount).toBe(0);
+});
+
+test("strengthens guardrails for choice steps", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "3", kind: "choice" });
+  const request = buildLearningRequest(currentStep, undefined, "hint");
+
+  expect(request.guardrails.noDirectAnswers).toBe(true);
+  expect(request.guardrails.noMultipleChoiceOptionLeak).toBe(true);
+  expect(request.instruction).toContain("не выбирай вариант ответа");
+  expect(request.instruction).toContain("не раскрывай прямой ответ");
+});
+
+test("uses hint mode without asking for a final solution", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "4", kind: "code" });
+  const request = buildLearningRequest(currentStep, undefined, "hint");
+
+  expect(request.mode).toBe("hint" satisfies LearningMode);
+  expect(request.instruction).toContain("без готового решения");
+  expect(request.instruction).toContain("не пиши финальное решение целиком");
 });
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
@@ -244,12 +309,21 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
     };
   };
 
-  expect(payload.stepText).toBe("Выберите один вариант из списка");
-  expect(payload.stepMarkdown).toBe("Выберите один вариант из списка");
+  expect(payload.stepText).toBe("Выберите один вариант из списка 1 5 2 3");
+  expect(payload.stepMarkdown).toBe([
+    "Выберите один вариант из списка",
+    "",
+    "Варианты:",
+    "",
+    "- 1",
+    "- 5",
+    "- 2",
+    "- 3",
+  ].join("\n"));
   expect(payload.stepContent).toMatchObject({
     format: "markdown",
-    markdown: "Выберите один вариант из списка",
-    plainText: "Выберите один вариант из списка",
+    markdown: payload.stepMarkdown,
+    plainText: "Выберите один вариант из списка 1 5 2 3",
   });
   expect(payload.metadata.courseTitle).toBe("Python для собеседования");
   expect(payload.metadata.lessonTitle).toBe("5.2 Тест: Списки");
@@ -272,6 +346,81 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
     answerOptionsCount: 4,
   });
   expect(payload.context.stats.extractionVersion).toBe("dom-v2");
+});
+
+test("extracts visible multiple choice assignment options without success feedback", async ({ page }) => {
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Multiple choice Stepik mock</title>
+        <style>
+          .lesson-step, .attempt, label, .attempt__feedback { display: block; }
+          label { margin: 6px 0; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="lesson-step">
+            <div class="step-inner__text">Выберите все подходящие ответы из списка</div>
+            <form class="attempt">
+              <div class="attempt__feedback">Прекрасный ответ.</div>
+              <label><input type="checkbox" name="answer" /> платформонезависимость</label>
+              <label><input type="checkbox" name="answer" /> встраиваемость</label>
+              <label><input type="checkbox" name="answer" /> простота</label>
+              <label><input type="checkbox" name="answer" /> наличие большой библиотеки классов</label>
+              <label><input type="checkbox" name="answer" /> динамическая типизация (для несложных программ)</label>
+            </form>
+          </section>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as {
+    stepText: string;
+    stepMarkdown: string;
+    context: {
+      task: {
+        kind: string;
+        answerOptionsCount?: number;
+      };
+    };
+  };
+
+  expect(payload.stepText).toBe([
+    "Выберите все подходящие ответы из списка",
+    "платформонезависимость",
+    "встраиваемость",
+    "простота",
+    "наличие большой библиотеки классов",
+    "динамическая типизация (для несложных программ)",
+  ].join(" "));
+  expect(payload.stepText).not.toContain("Прекрасный ответ");
+  expect(payload.stepMarkdown).toBe([
+    "Выберите все подходящие ответы из списка",
+    "",
+    "Варианты:",
+    "",
+    "- платформонезависимость",
+    "- встраиваемость",
+    "- простота",
+    "- наличие большой библиотеки классов",
+    "- динамическая типизация (для несложных программ)",
+  ].join("\n"));
+  expect(payload.context.task).toMatchObject({
+    kind: "choice",
+    answerOptionsCount: 5,
+  });
 });
 
 test("preserves formatted step content as markdown", async ({ page }) => {
@@ -586,6 +735,79 @@ test("renders previous visited steps from the context pack in the sidebar", asyn
   expect(sidebarText).toContain("посещенные страницы");
   expect(sidebarText).toContain("Шаг 1");
   expect(sidebarText).toContain("Первый шаг");
+});
+
+test("renders the learning request preview and switches modes in the sidebar", async ({ page }) => {
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik learning request mock</title>
+        <style>
+          body { margin: 0; min-height: 900px; font-family: sans-serif; }
+          .step-inner__text, .comment__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1 class="lesson-title">Тестовый урок</h1>
+          <section class="step-inner__text">
+            <h2>Обход списка</h2>
+            <p>Разберите, сколько раз выполнится тело цикла.</p>
+          </section>
+          <article class="comments__comment">
+            <p class="comment__text">Комментарий про частую ошибку.</p>
+          </article>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-trigger")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-learning")?.textContent ?? "";
+    });
+  }).toContain("Учебный запрос");
+
+  const initialLearningState = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return {
+      activeMode: shadow?.querySelector(".sc-mode-button.is-active")?.textContent,
+      preview: shadow?.querySelector(".sc-request-preview")?.textContent,
+      copyButton: shadow?.querySelector(".sc-copy-request")?.textContent,
+    };
+  });
+
+  expect(initialLearningState.activeMode).toBe("Подсказка");
+  expect(initialLearningState.preview).toContain('"mode": "hint"');
+  expect(initialLearningState.preview).toContain("Комментарий про частую ошибку.");
+  expect(initialLearningState.preview).toContain('"noDirectAnswers": true');
+  expect(initialLearningState.copyButton).toContain("Скопировать запрос");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    const notesButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-mode-button") ?? [])
+      .find((button) => button.textContent === "Конспект");
+    notesButton?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-request-preview")?.textContent ?? "";
+    });
+  }).toContain('"mode": "notes"');
 });
 
 test("renders markdown formatting in the sidebar", async ({ page }) => {

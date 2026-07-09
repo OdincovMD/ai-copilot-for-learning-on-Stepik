@@ -169,10 +169,60 @@ type ContextPack = {
 переписками. Если открыть сразу середину урока, предыдущих шагов не будет —
 они появятся после посещения ранних шагов.
 
+## Learning Request Preview
+
+Сайдбар локально формирует preview будущего AI-запроса. Данные никуда не
+отправляются: backend, API-ключи и реальные LLM-вызовы пока не подключены.
+
+Доступны режимы:
+
+- `Объяснить` — разобрать текущий шаг и ключевые идеи;
+- `Подсказка` — дать guidance без готового ответа;
+- `Конспект` — подготовить Markdown-конспект по текущему и предыдущим шагам.
+
+Preview содержит текущий Markdown, предыдущие посещенные шаги, комментарии
+текущего шага и guardrails:
+
+```ts
+type LearningRequest = {
+  version: "learning-request-v1";
+  mode: "explain" | "hint" | "notes";
+  language: "ru";
+  instruction: string;
+  guardrails: {
+    noDirectAnswers: true;
+    noMultipleChoiceOptionLeak: true;
+    focusOnUnderstanding: true;
+  };
+  input: {
+    currentStep: {
+      url: string;
+      title?: string;
+      markdown: string;
+      metadata: StepPayload["metadata"];
+      task: StepPayload["context"]["task"];
+    };
+    previousSteps: Array<{
+      url: string;
+      title?: string;
+      markdown: string;
+      metadata: StepPayload["metadata"];
+    }>;
+    comments: string[];
+    commentThreadsCount: number;
+  };
+};
+```
+
+Для тестовых и кодовых шагов инструкция явно запрещает выбирать вариант ответа,
+раскрывать прямой ответ или писать финальное решение целиком.
+
 ## Текущий UI
 
 - Плавающая кнопка справа открывает и закрывает сайдбар.
 - Кнопка `Обновить данные` повторно собирает payload из видимого DOM.
+- Блок `Учебный запрос` показывает AI-ready preview и позволяет скопировать
+  запрос для ручной проверки.
 - Блок `Контекст` показывает источник `посещенные страницы` и компактный
   список предыдущих посещенных шагов текущего урока.
 - Блок `Текст шага` отображает Markdown-preview с заголовками, списками,

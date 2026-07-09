@@ -272,6 +272,7 @@ const RELATIVE_TIME_PATTERN =
 const STEP_STATUS_PHRASES = [
   "Здорово, всё верно.",
   "Здорово, все верно.",
+  "Прекрасный ответ.",
   "Правильно.",
   "Неправильно.",
 ];
@@ -413,8 +414,9 @@ function extractStepContent(documentRef: Document): StepContent {
 
   const textClone = cloneStepContentRoot(root);
   const markdownClone = cloneStepContentRoot(root);
-  const plainText = sanitizeStepText(cleanText(textClone.textContent));
-  const markdown = sanitizeMarkdown(domToMarkdown(markdownClone)) || plainText;
+  const choiceOptions = extractChoiceOptionTexts(documentRef);
+  const plainText = appendMissingChoiceOptionsToText(sanitizeStepText(cleanText(textClone.textContent)), choiceOptions);
+  const markdown = appendMissingChoiceOptionsToMarkdown(sanitizeStepMarkdown(domToMarkdown(markdownClone)) || plainText, choiceOptions);
 
   return {
     format: "markdown",
@@ -428,6 +430,70 @@ function cloneStepContentRoot(root: HTMLElement): HTMLElement {
   clone.querySelectorAll(REMOVABLE_SELECTORS.join(",")).forEach((element) => element.remove());
 
   return clone;
+}
+
+function extractChoiceOptionTexts(documentRef: Document): string[] {
+  const optionElements = Array.from(documentRef.querySelectorAll<HTMLElement>("label")).filter((label) => {
+    return Boolean(label.querySelector("input[type='radio'], input[type='checkbox']"));
+  });
+
+  const fallbackOptionElements = CHOICE_OPTION_SELECTORS.flatMap((selector) => {
+    return Array.from(documentRef.querySelectorAll<HTMLElement>(selector)).map((element) => {
+      return element.closest<HTMLElement>("label, [class*='option'], [class*='choice'], [data-qa*='choice']") ?? element;
+    });
+  });
+
+  const candidates = optionElements.length > 0 ? optionElements : fallbackOptionElements;
+
+  return uniqueTexts(
+    uniqueElements(candidates)
+      .filter(isVisible)
+      .map(extractChoiceOptionText)
+      .filter((text): text is string => Boolean(text)),
+  );
+}
+
+function extractChoiceOptionText(element: HTMLElement): string | undefined {
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll([
+    "input",
+    "button",
+    "svg",
+    "[aria-hidden='true']",
+    "[class*='feedback']",
+    "[class*='result']",
+    "[data-qa*='feedback']",
+    "[data-qa*='result']",
+  ].join(",")).forEach((node) => node.remove());
+
+  const text = sanitizeStepText(cleanText(clone.textContent));
+
+  return text || undefined;
+}
+
+function appendMissingChoiceOptionsToText(stepText: string, choiceOptions: string[]): string {
+  const missingOptions = getMissingChoiceOptions(stepText, choiceOptions);
+
+  return [stepText, ...missingOptions].filter(Boolean).join(" ").trim();
+}
+
+function appendMissingChoiceOptionsToMarkdown(markdown: string, choiceOptions: string[]): string {
+  const missingOptions = getMissingChoiceOptions(markdown, choiceOptions);
+  if (missingOptions.length === 0) {
+    return markdown;
+  }
+
+  const optionsMarkdown = missingOptions.map((option) => `- ${option}`).join("\n");
+
+  return sanitizeStepMarkdown([markdown, "Варианты:", optionsMarkdown].filter(Boolean).join("\n\n"));
+}
+
+function getMissingChoiceOptions(value: string, choiceOptions: string[]): string[] {
+  const normalizedValue = normalizeForComparison(value);
+
+  return choiceOptions.filter((option) => {
+    return !normalizedValue.includes(normalizeForComparison(option));
+  });
 }
 
 function domToMarkdown(node: Node, context: { listDepth?: number; ordered?: boolean } = {}): string {
@@ -547,6 +613,10 @@ function sanitizeMarkdown(value: string): string {
     .map((line) => line.trimEnd())
     .join("\n")
     .trim();
+}
+
+function sanitizeStepMarkdown(value: string): string {
+  return sanitizeMarkdown(STEP_STATUS_PHRASES.reduce((text, phrase) => text.split(phrase).join(""), value));
 }
 
 function cleanMarkdownText(value: string): string {

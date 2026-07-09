@@ -1,9 +1,11 @@
 import { cacheStepAndBuildContextPack, type ContextPack } from "./contextPack";
+import { buildLearningRequest, DEFAULT_LEARNING_MODE } from "./learningRequest";
 import { createSidebar, type SidebarState } from "./sidebar";
 import { extractStepPayload } from "./stepPayload";
 
 const LOG_PREFIX = "[Stepik Copilot DOM Prototype]";
 const CONTEXT_LOG_PREFIX = "[Stepik Copilot Context Pack]";
+const LEARNING_REQUEST_LOG_PREFIX = "[Stepik Copilot Learning Request]";
 const DEBOUNCE_MS = 500;
 const RETRY_MS = 750;
 const MAX_WAIT_MS = 20_000;
@@ -56,6 +58,7 @@ async function collectAndPublishPayload(options: { force?: boolean } = {}): Prom
     sidebar.setState({ ...nextState, contextPack });
     console.log(LOG_PREFIX, payload);
     console.log(CONTEXT_LOG_PREFIX, contextPack);
+    console.log(LEARNING_REQUEST_LOG_PREFIX, buildLearningRequest(payload, contextPack, DEFAULT_LEARNING_MODE));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Неизвестная ошибка";
     sidebar.setState({ status: "error", message, payload: lastPayload, contextPack: lastContextPack });
