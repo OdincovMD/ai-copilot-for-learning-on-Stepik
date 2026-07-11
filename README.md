@@ -1,18 +1,22 @@
 # Stepik Copilot Extension
 
-Минимальный DOM-only прототип Chrome Extension MV3 для проверки, что со
-страницы Stepik можно собрать payload текущего шага без backend, AI и Stepik
-API.
+Минимальный прототип Chrome Extension MV3 + FastAPI backend bridge для проверки,
+что со страницы Stepik можно собрать payload текущего шага и отправить его в
+локальный backend без реального AI provider.
 
 ## Установка зависимостей
 
 ```bash
 npm install
+cp .env.example .env
 ```
 
 ## Сборка
 
 ```bash
+set -a
+. ./.env
+set +a
 npm run build
 ```
 
@@ -21,6 +25,9 @@ npm run build
 ## Проверка
 
 ```bash
+set -a
+. ./.env
+set +a
 npm test
 ```
 
@@ -32,6 +39,69 @@ npm test
 - сбор Context Pack из ранее посещенных шагов урока;
 - открытие сайдбара и отображение собранных данных.
 
+Backend-тесты запускаются отдельно:
+
+```bash
+cd backend
+python3 -m pip install -r requirements.txt
+set -a
+. ../.env
+set +a
+python3 -m pytest
+```
+
+## Локальный backend
+
+Расширение отправляет `LearningRequest` в локальный FastAPI-сервис. Реального
+AI provider пока нет: backend возвращает deterministic mock `LearningAnalysis`.
+Все порты и адреса берутся из `.env`; не хардкодь их в compose, Dockerfile или
+коде приложения.
+
+### Через Docker Compose
+
+```bash
+cp .env.example .env
+docker compose --env-file .env up --build backend
+```
+
+Health-check в другом терминале:
+
+```bash
+set -a
+. ./.env
+set +a
+curl "${VITE_BACKEND_URL}/health"
+```
+
+### Без Docker
+
+```bash
+cd backend
+python3 -m pip install -r requirements.txt
+set -a
+. ../.env
+set +a
+python3 -m uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload
+```
+
+Health-check:
+
+```bash
+set -a
+. ./.env
+set +a
+curl "${VITE_BACKEND_URL}/health"
+```
+
+Ожидаемый ответ:
+
+```json
+{
+  "status": "ok",
+  "service": "stepik-copilot-api"
+}
+```
+
 ## Локальная загрузка в Chrome
 
 1. Открой `chrome://extensions`.
@@ -41,8 +111,10 @@ npm test
 5. Открой страницу Stepik: `https://stepik.org/...`.
 6. Нажми плавающую кнопку Stepik Copilot справа на странице.
 7. Проверь, что открылся сайдбар с контекстом, текстом шага и комментариями.
-8. Для отладки можно открыть DevTools страницы и найти лог
-   `[Stepik Copilot DOM Prototype]`.
+8. Запусти backend и нажми `Сформировать preview ответа`.
+9. Для отладки можно открыть DevTools страницы и найти логи
+   `[Stepik Copilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
+   `[Stepik Copilot Learning Analysis]`.
 
 ## Локальная загрузка в Firefox
 
@@ -53,8 +125,10 @@ npm test
 5. Открой несколько шагов одного урока Stepik подряд.
 6. Нажми плавающую кнопку Stepik Copilot справа.
 7. В блоке `Контекст` проверь, что появились предыдущие посещенные шаги.
-8. В DevTools страницы можно найти два лога:
-   `[Stepik Copilot DOM Prototype]` и `[Stepik Copilot Context Pack]`.
+8. Запусти backend и нажми `Сформировать preview ответа`.
+9. В DevTools страницы можно найти логи:
+   `[Stepik Copilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
+   `[Stepik Copilot Learning Analysis]`.
 
 ## Текущий payload
 
@@ -217,12 +291,40 @@ type LearningRequest = {
 Для тестовых и кодовых шагов инструкция явно запрещает выбирать вариант ответа,
 раскрывать прямой ответ или писать финальное решение целиком.
 
+## Mock Copilot Answer
+
+Блок `Ответ Copilot` отправляет `LearningRequest` в FastAPI backend по адресу
+из `VITE_BACKEND_URL`. Это не AI-анализ: backend возвращает mock-результат,
+чтобы проверить сетевую связку, loading/error states и wire-контракт до
+подключения AI provider.
+
+```ts
+type LearningAnalysis = {
+  version: "learning-analysis-v1";
+  mode: "explain" | "hint" | "notes";
+  source: "backend-mock";
+  summary: string;
+  focusPoints: string[];
+  commentInsights: string[];
+  selfCheck: string[];
+  needsMoreContext: string;
+  warnings: string[];
+};
+```
+
+Backend mock сохраняет anti-cheating поведение: для тестов не выбирает вариант,
+для задач с кодом не пишет финальное решение целиком. Если backend не запущен,
+сайдбар покажет ошибку в блоке `Ответ Copilot`, но собранный payload останется
+видимым.
+
 ## Текущий UI
 
 - Плавающая кнопка справа открывает и закрывает сайдбар.
 - Кнопка `Обновить данные` повторно собирает payload из видимого DOM.
 - Блок `Учебный запрос` показывает AI-ready preview и позволяет скопировать
   запрос для ручной проверки.
+- Блок `Ответ Copilot` отправляет запрос в локальный FastAPI backend и
+  показывает structured mock без AI-вызова.
 - Блок `Контекст` показывает источник `посещенные страницы` и компактный
   список предыдущих посещенных шагов текущего урока.
 - Блок `Текст шага` отображает Markdown-preview с заголовками, списками,

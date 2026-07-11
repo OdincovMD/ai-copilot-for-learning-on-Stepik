@@ -1,0 +1,11 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      BACKEND_HOST: ${BACKEND_HOST}
+      BACKEND_PORT: ${BACKEND_PORT}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"

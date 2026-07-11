@@ -1,0 +1,1 @@
+"""Stepik Copilot backend package."""

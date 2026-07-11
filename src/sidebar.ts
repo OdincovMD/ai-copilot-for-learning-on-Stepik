@@ -1,4 +1,6 @@
 import type { ContextPack } from "./contextPack";
+import { AnalysisClientError, requestLearningAnalysis } from "./analysisClient";
+import type { LearningAnalysis } from "./learningAnalysis";
 import {
   buildLearningRequest,
   DEFAULT_LEARNING_MODE,
@@ -28,8 +30,15 @@ type SidebarOptions = {
   onRefresh: () => void;
 };
 
+type AnalysisState =
+  | { status: "idle" }
+  | { status: "analyzing" }
+  | { status: "ready"; analysis: LearningAnalysis }
+  | { status: "error"; message: string };
+
 const HOST_ID = "stepik-copilot-root";
 const LEARNING_REQUEST_LOG_PREFIX = "[Stepik Copilot Learning Request]";
+const LEARNING_ANALYSIS_LOG_PREFIX = "[Stepik Copilot Learning Analysis]";
 
 export function createSidebar(options: SidebarOptions): SidebarController {
   document.getElementById(HOST_ID)?.remove();
@@ -50,11 +59,15 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   let copyState: "idle" | "copied" | "error" = "idle";
   let requestCopyState: "idle" | "copied" | "error" = "idle";
   let learningMode: LearningMode = DEFAULT_LEARNING_MODE;
+  let analysisState: AnalysisState = { status: "idle" };
+  let analysisRequestId = 0;
 
   function setState(nextState: SidebarState): void {
     state = nextState;
     copyState = "idle";
     requestCopyState = "idle";
+    analysisState = { status: "idle" };
+    analysisRequestId += 1;
     render();
   }
 
@@ -209,6 +222,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     fragment.append(
       createOverview(payload, state.contextPack),
       createLearningRequestView(payload, state.contextPack),
+      createLearningAnalysisView(payload, state.contextPack),
       createSection("Контекст", createContextView(payload, state.contextPack)),
       createSection("Текст шага", createStepContentView(payload)),
       createSection("Комментарии", createCommentsView(payload)),
@@ -258,7 +272,37 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   function setLearningMode(nextMode: LearningMode, request: LearningRequest): void {
     learningMode = nextMode;
     requestCopyState = "idle";
+    analysisState = { status: "idle" };
+    analysisRequestId += 1;
     console.log(LEARNING_REQUEST_LOG_PREFIX, request);
+    render();
+  }
+
+  async function generateLearningAnalysis(request: LearningRequest): Promise<void> {
+    const requestId = analysisRequestId + 1;
+    analysisRequestId = requestId;
+    analysisState = { status: "analyzing" };
+    render();
+
+    try {
+      const analysis = await requestLearningAnalysis(request);
+      if (requestId !== analysisRequestId) {
+        return;
+      }
+
+      analysisState = { status: "ready", analysis };
+      console.log(LEARNING_ANALYSIS_LOG_PREFIX, analysis);
+    } catch (error) {
+      if (requestId !== analysisRequestId) {
+        return;
+      }
+
+      analysisState = {
+        status: "error",
+        message: getAnalysisErrorMessage(error),
+      };
+    }
+
     render();
   }
 
@@ -303,6 +347,39 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     copyButton.addEventListener("click", () => copyLearningRequest(serializedRequest, request));
 
     wrapper.append(header, switcher, meta, preview, copyButton);
+
+    return wrapper;
+  }
+
+  function createLearningAnalysisView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
+    const request = buildLearningRequest(payload, contextPack, learningMode);
+    const wrapper = createElement("section", "sc-analysis");
+    const header = createElement("div", "sc-analysis-header");
+    const title = createElement("h2", "sc-section-title");
+    title.textContent = "Ответ Copilot";
+    const summary = createElement("p", "sc-analysis-summary");
+    summary.textContent = getAnalysisSummaryText(analysisState);
+    header.append(title, summary);
+
+    const generateButton = createElement("button", "sc-generate-analysis") as HTMLButtonElement;
+    generateButton.type = "button";
+    generateButton.disabled = analysisState.status === "analyzing";
+    generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState)));
+    generateButton.addEventListener("click", () => generateLearningAnalysis(request));
+
+    wrapper.append(header, generateButton);
+
+    if (analysisState.status === "ready") {
+      wrapper.append(createAnalysisResult(analysisState.analysis));
+      return wrapper;
+    }
+
+    if (analysisState.status === "error") {
+      wrapper.append(createAnalysisErrorState(analysisState.message));
+      return wrapper;
+    }
+
+    wrapper.append(createAnalysisEmptyState(analysisState.status));
 
     return wrapper;
   }
@@ -369,7 +446,119 @@ function createLearningSummary(request: LearningRequest): string {
   const previousSteps = request.input.previousSteps.length;
   const comments = request.input.comments.length;
 
-  return `Локальный preview для режима «${modeLabel}»: текущий шаг, ${previousSteps} предыдущих шагов, ${comments} комментариев и anti-cheating guardrails.`;
+  return `Локальный preview для режима «${modeLabel}»: текущий шаг, ${formatPreviousSteps(previousSteps)}, ${formatCommentsCount(comments)} и anti-cheating guardrails.`;
+}
+
+function createAnalysisEmptyState(status: "idle" | "analyzing"): HTMLElement {
+  const empty = createElement("div", "sc-analysis-empty");
+  const title = createElement("div", "sc-analysis-empty-title");
+  title.textContent = status === "analyzing" ? "Отправляю запрос в backend" : "Backend пока не вызван";
+  const text = createElement("p", "sc-analysis-empty-text");
+  text.textContent = status === "analyzing"
+    ? "Жду structured response от FastAPI-сервиса из VITE_BACKEND_URL."
+    : "Этот блок покажет ответ backend. Сейчас AI provider еще не подключен, backend вернет deterministic mock.";
+  empty.append(title, text);
+
+  return empty;
+}
+
+function createAnalysisErrorState(message: string): HTMLElement {
+  const error = createElement("div", "sc-analysis-empty is-error");
+  const title = createElement("div", "sc-analysis-empty-title");
+  title.textContent = "Backend не ответил";
+  const text = createElement("p", "sc-analysis-empty-text");
+  text.textContent = message;
+  error.append(title, text);
+
+  return error;
+}
+
+function getAnalysisSummaryText(state: AnalysisState): string {
+  switch (state.status) {
+    case "analyzing":
+      return "Отправляем LearningRequest в локальный FastAPI backend. Внешний AI пока не вызывается.";
+    case "ready":
+      return `Ответ получен от backend (${state.analysis.source}). Это mock-результат без AI provider.`;
+    case "error":
+      return "Не удалось получить ответ backend. Данные шага остаются локально в сайдбаре.";
+    case "idle":
+      return "Сформируйте backend-preview ответа, чтобы проверить связку extension → FastAPI → extension.";
+  }
+}
+
+function getGenerateAnalysisButtonLabel(state: AnalysisState): string {
+  switch (state.status) {
+    case "analyzing":
+      return "Отправляю в backend";
+    case "ready":
+      return "Пересобрать backend-preview";
+    case "error":
+      return "Повторить запрос";
+    case "idle":
+      return "Сформировать preview ответа";
+  }
+}
+
+function getAnalysisErrorMessage(error: unknown): string {
+  if (error instanceof AnalysisClientError) {
+    return error.message;
+  }
+
+  return "Непредвиденная ошибка при запросе к backend.";
+}
+
+function createAnalysisResult(analysis: LearningAnalysis): HTMLElement {
+  const result = createElement("div", "sc-analysis-result");
+  result.append(
+    createAnalysisSummary(analysis),
+    createAnalysisList("На что обратить внимание", analysis.focusPoints),
+    createAnalysisList("Что путает других", analysis.commentInsights),
+    createAnalysisList("Проверь себя", analysis.selfCheck),
+    createAnalysisNote("Нужен ли контекст", analysis.needsMoreContext),
+  );
+
+  if (analysis.warnings.length > 0) {
+    result.append(createAnalysisList("Ограничения", analysis.warnings, "warning"));
+  }
+
+  return result;
+}
+
+function createAnalysisSummary(analysis: LearningAnalysis): HTMLElement {
+  const section = createElement("div", "sc-analysis-block is-summary");
+  const title = createElement("div", "sc-analysis-block-title");
+  title.textContent = "О чем шаг";
+  const text = createElement("p", "sc-analysis-text");
+  text.textContent = analysis.summary;
+  section.append(title, text);
+
+  return section;
+}
+
+function createAnalysisList(titleText: string, items: string[], variant: "default" | "warning" = "default"): HTMLElement {
+  const section = createElement("div", `sc-analysis-block is-${variant}`);
+  const title = createElement("div", "sc-analysis-block-title");
+  title.textContent = titleText;
+  const list = createElement("ul", "sc-analysis-list");
+  items.forEach((itemText) => {
+    const item = createElement("li");
+    item.textContent = itemText;
+    list.append(item);
+  });
+  section.append(title, list);
+
+  return section;
+}
+
+function createAnalysisNote(titleText: string, bodyText: string): HTMLElement {
+  const section = createElement("div", "sc-analysis-block is-note");
+  const title = createElement("div", "sc-analysis-block-title");
+  title.textContent = titleText;
+  const text = createElement("p", "sc-analysis-text");
+  text.textContent = bodyText;
+  section.append(title, text);
+
+  return section;
 }
 
 function getOverviewTitle(payload: StepPayload, contextPack: ContextPack | undefined): string {
@@ -389,7 +578,7 @@ function getOverviewDescription(payload: StepPayload, contextPack: ContextPack |
   const previousStepsCount = contextPack?.stats.includedPreviousSteps ?? 0;
 
   if (previousStepsCount > 0) {
-    return `${taskKind}, ${previousStepsCount} предыдущих шагов в локальном контексте.`;
+    return `${taskKind}, ${formatPreviousSteps(previousStepsCount)} в локальном контексте.`;
   }
 
   return `${taskKind}, предыдущие шаги появятся после посещения ранних шагов урока.`;
@@ -547,7 +736,7 @@ function getRequestCopyButtonLabel(copyState: "idle" | "copied" | "error"): stri
 
 function getHeaderSubtitle(state: SidebarState): string {
   if (state.status === "ready" && state.contextPack) {
-    return `${state.contextPack.stats.includedPreviousSteps} предыдущих шагов в контексте`;
+    return `${formatPreviousSteps(state.contextPack.stats.includedPreviousSteps)} в контексте`;
   }
 
   if (state.status === "ready") {
@@ -559,6 +748,34 @@ function getHeaderSubtitle(state: SidebarState): string {
   }
 
   return "Локальный DOM-прототип";
+}
+
+function formatPreviousSteps(count: number): string {
+  return `${count} ${pluralizeRu(count, "предыдущий шаг", "предыдущих шага", "предыдущих шагов")}`;
+}
+
+function formatCommentsCount(count: number): string {
+  return `${count} ${pluralizeRu(count, "комментарий", "комментария", "комментариев")}`;
+}
+
+function pluralizeRu(count: number, one: string, few: string, many: string): string {
+  const absCount = Math.abs(count);
+  const lastTwoDigits = absCount % 100;
+  const lastDigit = absCount % 10;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+    return many;
+  }
+
+  if (lastDigit === 1) {
+    return one;
+  }
+
+  if (lastDigit >= 2 && lastDigit <= 4) {
+    return few;
+  }
+
+  return many;
 }
 
 function createStepContentView(payload: StepPayload): HTMLElement {
@@ -829,7 +1046,7 @@ function createElement(tagName: string, className?: string): HTMLElement {
   return element;
 }
 
-function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh" | "spinner" | "warning"): SVGElement {
+function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh" | "sparkle" | "spinner" | "warning"): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -841,6 +1058,7 @@ function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh
     close: ["M18 6 6 18", "M6 6l12 12"],
     copy: ["M8 8h10v10H8z", "M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
     refresh: ["M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"],
+    sparkle: ["M12 3l1.7 5.1L19 10l-5.3 1.9L12 17l-1.7-5.1L5 10l5.3-1.9L12 3Z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"],
     spinner: ["M21 12a9 9 0 0 1-9 9"],
     warning: ["M12 8v5", "M12 17h.01", "M10.3 4.6 2.7 18a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"],
   };
@@ -1338,6 +1556,153 @@ const SIDEBAR_CSS = `
     color: var(--sc-error);
   }
 
+  .sc-analysis {
+    padding: 0 0 17px;
+    margin: 0 0 17px;
+    border-bottom: 1px solid var(--sc-border);
+  }
+
+  .sc-analysis-header {
+    display: grid;
+    gap: 2px;
+    margin-bottom: 11px;
+  }
+
+  .sc-analysis-header .sc-section-title {
+    margin-bottom: 0;
+  }
+
+  .sc-analysis-summary,
+  .sc-analysis-empty-text,
+  .sc-analysis-text {
+    margin: 0;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 520;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-generate-analysis {
+    width: 100%;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 9px 14px;
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--sc-blue), var(--sc-green-dark));
+    border: 1px solid rgba(13, 111, 67, 0.72);
+    border-radius: 8px;
+    box-shadow: 0 8px 18px rgba(37, 109, 133, 0.18);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 760;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-generate-analysis:hover {
+    background: linear-gradient(135deg, #2b7e99, #0b633b);
+    transform: translateY(-1px);
+  }
+
+  .sc-generate-analysis:disabled {
+    cursor: wait;
+    opacity: 0.72;
+    transform: none;
+  }
+
+  .sc-analysis-empty {
+    padding: 12px;
+    background: var(--sc-soft);
+    border: 1px dashed var(--sc-border-strong);
+    border-radius: 8px;
+  }
+
+  .sc-analysis-empty.is-error {
+    background: #fff8f6;
+    border-color: rgba(181, 71, 58, 0.34);
+  }
+
+  .sc-analysis-empty.is-error .sc-analysis-empty-title {
+    color: var(--sc-error);
+  }
+
+  .sc-analysis-empty-title {
+    margin: 0 0 4px;
+    color: var(--sc-text);
+    font-size: 12px;
+    font-weight: 760;
+    line-height: 1.3;
+  }
+
+  .sc-analysis-result {
+    display: grid;
+    gap: 10px;
+  }
+
+  .sc-analysis-block {
+    padding: 10px 11px;
+    background: #ffffff;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+  }
+
+  .sc-analysis-block.is-summary {
+    background: linear-gradient(135deg, rgba(230, 246, 238, 0.8), rgba(255, 255, 255, 0.92));
+    border-color: rgba(191, 208, 200, 0.82);
+  }
+
+  .sc-analysis-block.is-warning {
+    background: #fff8f6;
+    border-color: rgba(181, 71, 58, 0.24);
+  }
+
+  .sc-analysis-block-title {
+    margin: 0 0 6px;
+    color: var(--sc-ink);
+    font-size: 12px;
+    font-weight: 780;
+    line-height: 1.3;
+  }
+
+  .sc-analysis-list {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .sc-analysis-list li {
+    position: relative;
+    margin: 0;
+    padding-left: 14px;
+    color: var(--sc-text);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-analysis-list li::before {
+    content: "";
+    position: absolute;
+    top: 0.58em;
+    left: 0;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--sc-green);
+  }
+
+  .sc-analysis-block.is-warning .sc-analysis-list li::before {
+    background: var(--sc-error);
+  }
+
   .sc-kv-list {
     display: grid;
     grid-template-columns: minmax(92px, 0.44fr) minmax(0, 1fr);
@@ -1822,6 +2187,7 @@ const SIDEBAR_CSS = `
   @media (prefers-reduced-motion: reduce) {
     .sc-trigger,
     .sc-drawer,
+    .sc-generate-analysis,
     .sc-refresh {
       transition: none;
     }

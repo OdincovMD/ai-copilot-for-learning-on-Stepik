@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   buildContextPackFromCache,
@@ -7,16 +8,56 @@ import {
   createStepCacheKey,
   type StepCache,
 } from "../src/contextPack";
+import { buildMockLearningAnalysis } from "../src/learningAnalysis";
 import {
   buildLearningRequest,
   DEFAULT_LEARNING_MODE,
   serializeLearningRequest,
   type LearningMode,
+  type LearningRequest,
 } from "../src/learningRequest";
+import type { LearningAnalysis } from "../src/learningAnalysis";
 import type { StepPayload } from "../src/stepPayload";
 
 const DIST_CONTENT_SCRIPT = path.resolve("dist/content.js");
 const STEPIK_STEP_URL = "https://stepik.org/lesson/1492667/step/5?unit=1512554";
+const BACKEND_URL = getEnvValue("VITE_BACKEND_URL");
+if (!BACKEND_URL) {
+  throw new Error("VITE_BACKEND_URL must be set for Playwright tests");
+}
+const BACKEND_ANALYZE_URL = `${BACKEND_URL}/analyze-step`;
+
+function getEnvValue(name: string): string | undefined {
+  return process.env[name] ?? readEnvValue(".env", name) ?? readEnvValue(".env.example", name);
+}
+
+function readEnvValue(filePath: string, name: string): string | undefined {
+  if (!existsSync(filePath)) {
+    return undefined;
+  }
+
+  const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    if (key !== name) {
+      continue;
+    }
+
+    return trimmed.slice(separatorIndex + 1).trim().replace(/^["']|["']$/g, "");
+  }
+
+  return undefined;
+}
 
 function createMockStepPayload(options: {
   lessonId?: string;
@@ -85,6 +126,48 @@ function createStepCache(payloads: StepPayload[]): StepCache {
     }),
   );
 }
+
+test("uses Stepik document title metadata when lesson DOM text is comments noise", async ({ page }) => {
+  const currentUrl = "https://stepik.org/lesson/265081/step/3?unit=246030";
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.route(currentUrl, async (route) => {
+    await route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `
+        <!doctype html>
+        <html lang="ru">
+          <head>
+            <title>"Поколение Python": курс для начинающих: урок Выбор из двух, шаг 3 — Stepik</title>
+            <style>
+              .lesson-title, .step-inner__text { display: block; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <a class="lesson-title" href="/lesson/265081/step/3">Комментариев</a>
+              <section class="step-inner__text"><h2>Частые ошибки</h2></section>
+            </main>
+          </body>
+        </html>
+      `,
+    });
+  });
+  await page.goto(currentUrl);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as StepPayload;
+
+  expect(payload.metadata.courseTitle).toBe("\"Поколение Python\": курс для начинающих");
+  expect(payload.metadata.lessonTitle).toBe("Выбор из двух");
+  expect(payload.metadata.stepTitle).toBe("Частые ошибки");
+});
 
 test("builds an empty context pack for the first visited step", () => {
   const currentStep = createMockStepPayload({ stepPosition: "1" });
@@ -191,6 +274,73 @@ test("uses hint mode without asking for a final solution", () => {
   expect(request.mode).toBe("hint" satisfies LearningMode);
   expect(request.instruction).toContain("без готового решения");
   expect(request.instruction).toContain("не пиши финальное решение целиком");
+});
+
+test("builds a stable mock learning analysis", () => {
+  const currentStep = createMockStepPayload({
+    stepPosition: "5",
+    title: "Тестовый шаг",
+    stepMarkdown: "## Тестовый шаг\n\nРазберите условие.",
+    comments: ["Комментарий с частой ошибкой"],
+  });
+  const request = buildLearningRequest(currentStep, undefined, "explain");
+  const analysis = buildMockLearningAnalysis(request);
+
+  expect(analysis).toMatchObject({
+    version: "learning-analysis-v1",
+    mode: "explain",
+    source: "local-mock",
+  });
+  expect(analysis.summary).toContain("Тестовый шаг");
+  expect(analysis.focusPoints.length).toBeGreaterThan(0);
+  expect(analysis.commentInsights.join(" ")).toContain("1");
+  expect(analysis.selfCheck.length).toBeGreaterThan(0);
+});
+
+test("builds graceful mock comment insights without comments", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "1", comments: [] });
+  const request = buildLearningRequest(currentStep, undefined, DEFAULT_LEARNING_MODE);
+  const analysis = buildMockLearningAnalysis(request);
+
+  expect(analysis.commentInsights).toEqual(["Видимых комментариев нет, поэтому mock не делает выводов по обсуждению."]);
+  expect(analysis.needsMoreContext).toContain("Контекст ограничен текущим шагом");
+});
+
+test("does not produce direct answers for choice mock analysis", () => {
+  const currentStep = createMockStepPayload({
+    stepPosition: "2",
+    kind: "choice",
+    stepMarkdown: [
+      "Выберите все подходящие ответы из списка",
+      "",
+      "Варианты:",
+      "",
+      "- платформонезависимость",
+      "- простота",
+    ].join("\n"),
+  });
+  const request = buildLearningRequest(currentStep, undefined, "hint");
+  const analysis = buildMockLearningAnalysis(request);
+  const serialized = JSON.stringify(analysis).toLowerCase();
+
+  expect(analysis.warnings.join(" ")).toContain("не выбирает вариант ответа");
+  expect(serialized).not.toContain("правильный вариант");
+  expect(serialized).not.toContain("ответ: платформонезависимость");
+});
+
+test("does not produce final code solution for code mock analysis", () => {
+  const currentStep = createMockStepPayload({
+    stepPosition: "3",
+    kind: "code",
+    stepMarkdown: "Напишите программу для обработки списка.",
+  });
+  const request = buildLearningRequest(currentStep, undefined, "hint");
+  const analysis = buildMockLearningAnalysis(request);
+  const serialized = JSON.stringify(analysis).toLowerCase();
+
+  expect(analysis.warnings.join(" ")).toContain("не пишет финальное решение целиком");
+  expect(serialized).not.toContain("готовая программа");
+  expect(serialized).not.toContain("финальный код");
 });
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
@@ -808,6 +958,183 @@ test("renders the learning request preview and switches modes in the sidebar", a
       return shadow?.querySelector(".sc-request-preview")?.textContent ?? "";
     });
   }).toContain('"mode": "notes"');
+});
+
+test("renders backend Copilot answer and resets it when mode changes", async ({ page }) => {
+  let capturedRequest: LearningRequest | undefined;
+
+  await page.route(BACKEND_ANALYZE_URL, async (route) => {
+    capturedRequest = route.request().postDataJSON() as LearningRequest;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: "learning-analysis-v1",
+        mode: capturedRequest.mode,
+        source: "backend-mock",
+        summary: "Backend mock-подсказка проверяет связку extension и FastAPI.",
+        focusPoints: ["На что обратить внимание"],
+        commentInsights: ["Что путает других"],
+        selfCheck: ["Проверь себя"],
+        needsMoreContext: "Контекст достаточен для mock-проверки.",
+        warnings: ["Учебный режим: backend mock не выбирает вариант ответа и не раскрывает правильный выбор."],
+      } satisfies LearningAnalysis),
+    });
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik mock analysis sidebar</title>
+        <style>
+          body { margin: 0; min-height: 900px; font-family: sans-serif; }
+          .step-inner__text, .comment__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1 class="lesson-title">Тестовый урок</h1>
+          <section class="step-inner__text">Выберите один вариант из списка</section>
+          <label><input type="radio" name="answer" /> первый вариант</label>
+          <label><input type="radio" name="answer" /> второй вариант</label>
+          <article class="comments__comment">
+            <p class="comment__text">Комментарий про частую ошибку.</p>
+          </article>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-trigger")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Сформировать preview ответа");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-generate-analysis")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Отправляю в backend");
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("О чем шаг");
+
+  expect(capturedRequest?.version).toBe("learning-request-v1");
+  expect(capturedRequest?.mode).toBe("hint");
+  expect(capturedRequest?.input.currentStep.markdown).toContain("Выберите один вариант из списка");
+  expect(capturedRequest?.input.comments).toEqual(["Комментарий про частую ошибку."]);
+
+  const generatedText = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+  });
+
+  expect(generatedText).toContain("На что обратить внимание");
+  expect(generatedText).toContain("Что путает других");
+  expect(generatedText).toContain("Проверь себя");
+  expect(generatedText).toContain("не выбирает вариант ответа");
+  expect(generatedText).toContain("backend-mock");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    const explainButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-mode-button") ?? [])
+      .find((button) => button.textContent === "Объяснить");
+    explainButton?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Backend пока не вызван");
+});
+
+test("renders backend analysis error without breaking the sidebar", async ({ page }) => {
+  await page.route(BACKEND_ANALYZE_URL, async (route) => {
+    await route.abort("failed");
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Stepik backend error mock</title>
+        <style>
+          body { margin: 0; min-height: 900px; font-family: sans-serif; }
+          .step-inner__text { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1 class="lesson-title">Тестовый урок</h1>
+          <section class="step-inner__text">Материал шага для backend error.</section>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-trigger")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Сформировать preview ответа");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-generate-analysis")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Backend не ответил");
+
+  const sidebarText = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
+  });
+
+  expect(sidebarText).toContain("Backend недоступен");
+  expect(sidebarText).toContain("Материал шага для backend error.");
 });
 
 test("renders markdown formatting in the sidebar", async ({ page }) => {

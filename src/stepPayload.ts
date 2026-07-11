@@ -278,20 +278,22 @@ const STEP_STATUS_PHRASES = [
 ];
 
 export function extractStepPayload(documentRef: Document = document): StepPayload {
+  const title = cleanText(documentRef.title);
+  const titleMetadata = extractMetadataFromTitle(title);
   const metadata = {
-    courseTitle: findFirstText(documentRef, COURSE_TITLE_SELECTORS),
-    lessonTitle: findFirstText(documentRef, LESSON_TITLE_SELECTORS),
+    courseTitle: findFirstText(documentRef, COURSE_TITLE_SELECTORS) || titleMetadata.courseTitle,
+    lessonTitle: normalizeLessonTitle(findFirstText(documentRef, LESSON_TITLE_SELECTORS)) || titleMetadata.lessonTitle,
     stepTitle: findFirstText(documentRef, STEP_TITLE_SELECTORS),
   };
   const stepContent = extractStepContent(documentRef);
   const stepText = stepContent.plainText;
   const commentThreads = extractCommentThreads(documentRef);
   const comments = flattenCommentThreads(commentThreads) ?? extractLooseComments(documentRef);
-  const title = cleanText(documentRef.title) || metadata.stepTitle;
+  const pageTitle = title || metadata.stepTitle;
 
   return {
     url: documentRef.location.href,
-    title,
+    title: pageTitle,
     stepText,
     stepMarkdown: stepContent.markdown,
     stepContent,
@@ -305,6 +307,26 @@ export function extractStepPayload(documentRef: Document = document): StepPayloa
       stepText,
     }),
   };
+}
+
+function extractMetadataFromTitle(title: string): Pick<StepPayload["metadata"], "courseTitle" | "lessonTitle"> {
+  const match = title.match(/^(.+?):\s*урок\s+(.+?),\s*шаг\s+\d+\s+—\s+Stepik$/i);
+  if (!match) {
+    return {};
+  }
+
+  return removeEmptyValues({
+    courseTitle: cleanText(match[1]),
+    lessonTitle: cleanText(match[2]),
+  });
+}
+
+function normalizeLessonTitle(value: string | undefined): string | undefined {
+  if (!value || /^(комментар(?:ий|иев)|comments?)$/i.test(value)) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function createStepContext(
