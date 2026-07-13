@@ -57,6 +57,18 @@ AI provider пока нет: backend возвращает deterministic mock `Le
 Все порты и адреса берутся из `.env`; не хардкодь их в compose, Dockerfile или
 коде приложения.
 
+Также backend читает из `.env` лимиты входного payload:
+
+- `MAX_CURRENT_STEP_MARKDOWN_CHARS`
+- `MAX_PREVIOUS_STEPS`
+- `MAX_PREVIOUS_STEP_MARKDOWN_CHARS`
+- `MAX_COMMENTS`
+- `MAX_COMMENT_CHARS`
+- `MAX_TOTAL_REQUEST_CHARS`
+
+Если расширение или поддельный клиент отправит слишком большой запрос,
+`POST /analyze-step` вернет `413` с краткой причиной.
+
 ### Через Docker Compose
 
 ```bash

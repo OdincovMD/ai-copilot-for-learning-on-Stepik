@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .analysis import build_mock_learning_analysis
 from .config import get_settings
 from .models import LearningAnalysis, LearningRequest
+from .validation import PayloadLimitError, validate_learning_request_limits
 
 
 settings = get_settings()
@@ -30,4 +31,9 @@ async def health() -> dict[str, str]:
 
 @app.post("/analyze-step", response_model=LearningAnalysis)
 async def analyze_step(request: LearningRequest) -> LearningAnalysis:
+    try:
+        validate_learning_request_limits(request, settings)
+    except PayloadLimitError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+
     return build_mock_learning_analysis(request)

@@ -6,6 +6,12 @@ import os
 import httpx
 
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "*")
+os.environ.setdefault("MAX_CURRENT_STEP_MARKDOWN_CHARS", "12000")
+os.environ.setdefault("MAX_PREVIOUS_STEPS", "5")
+os.environ.setdefault("MAX_PREVIOUS_STEP_MARKDOWN_CHARS", "6000")
+os.environ.setdefault("MAX_COMMENTS", "40")
+os.environ.setdefault("MAX_COMMENT_CHARS", "1200")
+os.environ.setdefault("MAX_TOTAL_REQUEST_CHARS", "32000")
 
 from app.main import app
 
@@ -119,3 +125,33 @@ def test_code_warning_does_not_include_final_solution() -> None:
     assert "не пишет финальное решение целиком" in serialized
     assert "финальный код" not in serialized
     assert "готовая программа" not in serialized
+
+
+def test_rejects_too_large_current_step_markdown() -> None:
+    request = make_learning_request()
+    request["input"]["currentStep"]["markdown"] = "x" * 12001
+
+    response = asyncio.run(make_request("POST", "/analyze-step", json=request))
+
+    assert response.status_code == 413
+    assert "currentStep.markdown is too large" in response.json()["detail"]
+
+
+def test_rejects_too_many_previous_steps() -> None:
+    request = make_learning_request()
+    previous_step = request["input"]["previousSteps"][0]
+    request["input"]["previousSteps"] = [previous_step for _ in range(6)]
+
+    response = asyncio.run(make_request("POST", "/analyze-step", json=request))
+
+    assert response.status_code == 413
+    assert "previousSteps is too large" in response.json()["detail"]
+
+
+def test_rejects_too_long_comment() -> None:
+    request = make_learning_request(comments=["x" * 1201])
+
+    response = asyncio.run(make_request("POST", "/analyze-step", json=request))
+
+    assert response.status_code == 413
+    assert "comments[0] is too large" in response.json()["detail"]
