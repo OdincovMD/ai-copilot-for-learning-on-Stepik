@@ -456,7 +456,7 @@ function createAnalysisEmptyState(status: "idle" | "analyzing"): HTMLElement {
   const text = createElement("p", "sc-analysis-empty-text");
   text.textContent = status === "analyzing"
     ? "Жду structured response от FastAPI-сервиса из VITE_BACKEND_URL."
-    : "Этот блок покажет ответ backend. Сейчас AI provider еще не подключен, backend вернет deterministic mock.";
+    : "Этот блок покажет ответ backend. Для бесплатной локальной проверки можно выбрать ANALYSIS_PROVIDER=ollama.";
   empty.append(title, text);
 
   return empty;
@@ -476,14 +476,26 @@ function createAnalysisErrorState(message: string): HTMLElement {
 function getAnalysisSummaryText(state: AnalysisState): string {
   switch (state.status) {
     case "analyzing":
-      return "Отправляем LearningRequest в локальный FastAPI backend. Внешний AI пока не вызывается.";
+      return "Отправляем LearningRequest в локальный FastAPI backend. Provider выбирается в .env.";
     case "ready":
-      return `Ответ получен от backend (${state.analysis.source}). Это mock-результат без AI provider.`;
+      return getReadyAnalysisSummaryText(state.analysis.source);
     case "error":
       return "Не удалось получить ответ backend. Данные шага остаются локально в сайдбаре.";
     case "idle":
       return "Сформируйте backend-preview ответа, чтобы проверить связку extension → FastAPI → extension.";
   }
+}
+
+function getReadyAnalysisSummaryText(source: LearningAnalysis["source"]): string {
+  if (source === "ollama") {
+    return "Ответ получен от локальной Ollama через backend. API-ключи и внешний AI не использовались.";
+  }
+
+  if (source === "openai") {
+    return "Ответ получен от OpenAI через backend. API-ключ остается только на сервере.";
+  }
+
+  return `Ответ получен от backend (${source}). Это deterministic mock без внешнего AI provider.`;
 }
 
 function getGenerateAnalysisButtonLabel(state: AnalysisState): string {
@@ -501,7 +513,7 @@ function getGenerateAnalysisButtonLabel(state: AnalysisState): string {
 
 function getAnalysisErrorMessage(error: unknown): string {
   if (error instanceof AnalysisClientError) {
-    return error.message;
+    return error.requestId ? `${error.message} Request ID: ${error.requestId}` : error.message;
   }
 
   return "Непредвиденная ошибка при запросе к backend.";

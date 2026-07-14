@@ -1077,7 +1077,20 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
 test("renders backend analysis error without breaking the sidebar", async ({ page }) => {
   await page.route(BACKEND_ANALYZE_URL, async (route) => {
-    await route.abort("failed");
+    await route.fulfill({
+      status: 413,
+      contentType: "application/json",
+      headers: {
+        "X-Request-Id": "req-playwright-413",
+      },
+      body: JSON.stringify({
+        error: {
+          code: "payload_too_large",
+          message: "currentStep.markdown is too large",
+          requestId: "req-playwright-413",
+        },
+      }),
+    });
   });
 
   await page.setContent(`
@@ -1133,7 +1146,8 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
     return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
   });
 
-  expect(sidebarText).toContain("Backend недоступен");
+  expect(sidebarText).toContain("currentStep.markdown is too large");
+  expect(sidebarText).toContain("req-playwright-413");
   expect(sidebarText).toContain("Материал шага для backend error.");
 });
 

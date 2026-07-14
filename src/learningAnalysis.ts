@@ -3,7 +3,7 @@ import type { LearningMode, LearningRequest } from "./learningRequest";
 export type LearningAnalysis = {
   version: "learning-analysis-v1";
   mode: LearningMode;
-  source: "local-mock" | "backend-mock";
+  source: "local-mock" | "backend-mock" | "openai" | "ollama";
   summary: string;
   focusPoints: string[];
   commentInsights: string[];

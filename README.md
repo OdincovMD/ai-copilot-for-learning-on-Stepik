@@ -2,7 +2,8 @@
 
 Минимальный прототип Chrome Extension MV3 + FastAPI backend bridge для проверки,
 что со страницы Stepik можно собрать payload текущего шага и отправить его в
-локальный backend без реального AI provider.
+локальный backend. Backend умеет работать в mock-режиме, с локальной Ollama или
+с внешним provider через серверный env.
 
 ## Установка зависимостей
 
@@ -52,10 +53,9 @@ python3 -m pytest
 
 ## Локальный backend
 
-Расширение отправляет `LearningRequest` в локальный FastAPI-сервис. Реального
-AI provider пока нет: backend возвращает deterministic mock `LearningAnalysis`.
-Все порты и адреса берутся из `.env`; не хардкодь их в compose, Dockerfile или
-коде приложения.
+Расширение отправляет `LearningRequest` в локальный FastAPI-сервис. Все порты,
+адреса, модели и ключи берутся из `.env`; не хардкодь их в compose, Dockerfile
+или коде приложения.
 
 Также backend читает из `.env` лимиты входного payload:
 
@@ -67,7 +67,83 @@ AI provider пока нет: backend возвращает deterministic mock `Le
 - `MAX_TOTAL_REQUEST_CHARS`
 
 Если расширение или поддельный клиент отправит слишком большой запрос,
-`POST /analyze-step` вернет `413` с краткой причиной.
+`POST /analyze-step` вернет `413` с единым error contract. Каждый backend-ответ
+получает header `X-Request-Id`; extension показывает `requestId` в ошибке,
+если backend его прислал.
+
+```ts
+type ApiError = {
+  error: {
+    code:
+      | "payload_too_large"
+      | "validation_error"
+      | "provider_config_error"
+      | "provider_error"
+      | "internal_error";
+    message: string;
+    requestId: string;
+    details?: unknown;
+  };
+};
+```
+
+`ANALYSIS_PROVIDER=mock` оставляет текущий deterministic backend mock.
+`ANALYSIS_PROVIDER=ollama` переключает `/analyze-step` на локальную Ollama. Для
+этого нужны `OLLAMA_BASE_URL`, `OLLAMA_MODEL` и `OLLAMA_TIMEOUT_SECONDS` в
+`.env`; API-ключ не нужен.
+`ANALYSIS_PROVIDER=openai` переключает `/analyze-step` на OpenAI Responses API;
+для этого нужны `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` и
+`OPENAI_TIMEOUT_SECONDS` в `.env`. Ключи никогда не попадают в extension.
+
+### Локальная Ollama
+
+Это бесплатный dev-путь без платных токенов. По умолчанию в `.env.example`
+стоит легкая модель `qwen2.5:3b`; если качество будет слабым, можно заменить
+только `OLLAMA_MODEL`.
+
+#### Ollama в Docker
+
+Этот вариант не требует устанавливать Ollama на хост. Сервис `ollama` и
+одноразовый `ollama-pull` включены в compose-профиль `ollama`; модель
+скачивается в Docker volume `ollama-models`.
+
+В `.env`:
+
+```env
+ANALYSIS_PROVIDER=ollama
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=qwen2.5:3b
+```
+
+Запуск:
+
+```bash
+docker compose --env-file .env --profile ollama up --build backend ollama-pull
+```
+
+`ollama-pull` завершится после скачивания модели, а `backend` и `ollama`
+останутся работать. Если модель уже лежит в volume, команда быстро проверит ее
+наличие и не будет заново тянуть весь вес.
+
+#### Ollama на хосте
+
+Если Ollama уже установлена на машине, можно не поднимать контейнер `ollama`.
+Для backend в Docker поставь:
+
+```env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Для backend без Docker поставь:
+
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+```bash
+ollama pull qwen2.5:3b
+ollama serve
+```
 
 ### Через Docker Compose
 
@@ -306,15 +382,15 @@ type LearningRequest = {
 ## Mock Copilot Answer
 
 Блок `Ответ Copilot` отправляет `LearningRequest` в FastAPI backend по адресу
-из `VITE_BACKEND_URL`. Это не AI-анализ: backend возвращает mock-результат,
-чтобы проверить сетевую связку, loading/error states и wire-контракт до
-подключения AI provider.
+из `VITE_BACKEND_URL`. Provider выбирается через `ANALYSIS_PROVIDER`: mock для
+детерминированного теста, ollama для бесплатной локальной модели, openai для
+серверного внешнего provider.
 
 ```ts
 type LearningAnalysis = {
   version: "learning-analysis-v1";
   mode: "explain" | "hint" | "notes";
-  source: "backend-mock";
+  source: "backend-mock" | "ollama" | "openai";
   summary: string;
   focusPoints: string[];
   commentInsights: string[];

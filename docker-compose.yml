@@ -1,4 +1,30 @@
 services:
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    profiles:
+      - ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:${OLLAMA_PORT}
+    ports:
+      - "${OLLAMA_PORT}:${OLLAMA_PORT}"
+    volumes:
+      - ollama-models:/root/.ollama
+
+  ollama-pull:
+    image: ${OLLAMA_IMAGE}
+    profiles:
+      - ollama
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:${OLLAMA_PORT}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull "${OLLAMA_MODEL}"'
+
   backend:
     build:
       context: ./backend
@@ -7,6 +33,14 @@ services:
       BACKEND_HOST: ${BACKEND_HOST}
       BACKEND_PORT: ${BACKEND_PORT}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      ANALYSIS_PROVIDER: ${ANALYSIS_PROVIDER}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS}
       MAX_CURRENT_STEP_MARKDOWN_CHARS: ${MAX_CURRENT_STEP_MARKDOWN_CHARS}
       MAX_PREVIOUS_STEPS: ${MAX_PREVIOUS_STEPS}
       MAX_PREVIOUS_STEP_MARKDOWN_CHARS: ${MAX_PREVIOUS_STEP_MARKDOWN_CHARS}
@@ -15,3 +49,8 @@ services:
       MAX_TOTAL_REQUEST_CHARS: ${MAX_TOTAL_REQUEST_CHARS}
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  ollama-models:

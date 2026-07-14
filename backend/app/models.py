@@ -72,7 +72,7 @@ class LearningRequest(BaseModel):
 class LearningAnalysis(BaseModel):
     version: Literal["learning-analysis-v1"]
     mode: LearningMode
-    source: Literal["backend-mock"]
+    source: Literal["backend-mock", "openai", "ollama"]
     summary: str
     focusPoints: list[str]
     commentInsights: list[str]
