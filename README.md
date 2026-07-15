@@ -145,6 +145,10 @@ ollama pull qwen2.5:3b
 ollama serve
 ```
 
+Локальная модель может долго отвечать на первом запросе. Extension ждет ответ
+столько, сколько указано в `VITE_ANALYSIS_TIMEOUT_MS`; после изменения этого
+значения нужно заново выполнить `npm run build` и reload temporary add-on.
+
 ### Через Docker Compose
 
 ```bash

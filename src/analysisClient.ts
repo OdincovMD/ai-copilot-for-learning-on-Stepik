@@ -2,7 +2,7 @@ import type { LearningAnalysis } from "./learningAnalysis";
 import type { LearningRequest } from "./learningRequest";
 
 const DEFAULT_BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
-const ANALYSIS_TIMEOUT_MS = 30_000;
+const ANALYSIS_TIMEOUT_MS = parseAnalysisTimeoutMs(import.meta.env.VITE_ANALYSIS_TIMEOUT_MS);
 
 type ApiErrorCode = "payload_too_large" | "validation_error" | "provider_config_error" | "provider_error" | "internal_error";
 
@@ -90,13 +90,35 @@ export async function requestLearningAnalysis(
     }
 
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new AnalysisClientError("Backend не ответил вовремя");
+      throw new AnalysisClientError(
+        `Backend не ответил за ${formatTimeoutSeconds(timeoutMs)} сек. `
+        + "Для локальной Ollama это часто значит, что модель еще прогревается или отвечает медленно.",
+      );
     }
 
     throw new AnalysisClientError("Backend недоступен. Проверьте, что FastAPI-сервис запущен на адресе из VITE_BACKEND_URL.");
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+function parseAnalysisTimeoutMs(value: string | undefined): number {
+  if (!value) {
+    return 120_000;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 120_000;
+  }
+
+  return parsed;
+}
+
+function formatTimeoutSeconds(timeoutMs: number): string {
+  return (timeoutMs / 1000).toLocaleString("ru-RU", {
+    maximumFractionDigits: 1,
+  });
 }
 
 function isLearningAnalysis(value: unknown): value is LearningAnalysis {

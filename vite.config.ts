@@ -5,10 +5,12 @@ const backendUrl = getEnvValue("VITE_BACKEND_URL");
 if (!backendUrl) {
   throw new Error("VITE_BACKEND_URL must be set in .env or .env.example");
 }
+const analysisTimeoutMs = getEnvValue("VITE_ANALYSIS_TIMEOUT_MS") ?? "120000";
 
 export default defineConfig({
   define: {
     "import.meta.env.VITE_BACKEND_URL": JSON.stringify(backendUrl),
+    "import.meta.env.VITE_ANALYSIS_TIMEOUT_MS": JSON.stringify(analysisTimeoutMs),
   },
   build: {
     emptyOutDir: true,
