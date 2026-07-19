@@ -149,7 +149,7 @@ test("uses Stepik document title metadata when lesson DOM text is comments noise
           </head>
           <body>
             <main>
-              <a class="lesson-title" href="/lesson/265081/step/3">Комментариев</a>
+              <a class="lesson-title" href="/lesson/265081/step/3">Комментарии</a>
               <section class="step-inner__text"><h2>Частые ошибки</h2></section>
             </main>
           </body>
@@ -167,6 +167,56 @@ test("uses Stepik document title metadata when lesson DOM text is comments noise
   expect(payload.metadata.courseTitle).toBe("\"Поколение Python\": курс для начинающих");
   expect(payload.metadata.lessonTitle).toBe("Выбор из двух");
   expect(payload.metadata.stepTitle).toBe("Частые ошибки");
+});
+
+test("counts choice option labels without counting wrapper nodes", async ({ page }) => {
+  const payloadPromise = page.waitForEvent("console", async (message) => {
+    const [prefix] = message.args();
+
+    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
+  });
+
+  await page.setContent(`
+    <!doctype html>
+    <html lang="ru">
+      <head>
+        <title>Python Тесты: урок Функции. Часть 1, шаг 8 — Stepik</title>
+        <style>
+          .step-inner__text, .choice-group, .choice-option, label { display: block; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="step-inner__text">
+            <h3>Выберите один вариант из списка</h3>
+          </section>
+          <form class="choice-group">
+            <div class="choice-option">
+              <label><input type="radio" name="answer" /> Аргументы, которые передаются в виде пар "ключ=значение"</label>
+            </div>
+            <div class="choice-option">
+              <label><input type="radio" name="answer" /> Аргументы, которые функция получает из глобальной области видимости</label>
+            </div>
+            <div class="choice-option">
+              <label><input type="radio" name="answer" /> Аргументы, которые передаются в функцию в строгом порядке, соответствующем порядку параметров</label>
+            </div>
+            <div class="choice-option">
+              <label><input type="radio" name="answer" /> Аргументы, которым можно присвоить значение по умолчанию</label>
+            </div>
+          </form>
+        </main>
+      </body>
+    </html>
+  `);
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+
+  const message = await payloadPromise;
+  const [, payloadHandle] = message.args();
+  const payload = await payloadHandle.jsonValue() as StepPayload;
+
+  expect(payload.metadata.lessonTitle).toBe("Функции. Часть 1");
+  expect(payload.context.task.answerOptionsCount).toBe(4);
+  expect(payload.stepMarkdown).toContain("- Аргументы, которые передаются в виде пар");
 });
 
 test("builds an empty context pack for the first visited step", () => {
@@ -265,6 +315,8 @@ test("strengthens guardrails for choice steps", () => {
   expect(request.guardrails.noMultipleChoiceOptionLeak).toBe(true);
   expect(request.instruction).toContain("не выбирай вариант ответа");
   expect(request.instruction).toContain("не раскрывай прямой ответ");
+  expect(request.instruction).toContain("Не перечисляй и не переформулируй все варианты");
+  expect(request.instruction).toContain("Объясняй тему обобщенно");
 });
 
 test("uses hint mode without asking for a final solution", () => {

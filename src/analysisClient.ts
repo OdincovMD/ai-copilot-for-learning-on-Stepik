@@ -134,6 +134,7 @@ function isLearningAnalysis(value: unknown): value is LearningAnalysis {
       candidate.source === "local-mock"
       || candidate.source === "backend-mock"
       || candidate.source === "openai"
+      || candidate.source === "groq"
       || candidate.source === "ollama"
     )
     && typeof candidate.summary === "string"

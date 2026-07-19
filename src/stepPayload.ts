@@ -322,7 +322,7 @@ function extractMetadataFromTitle(title: string): Pick<StepPayload["metadata"], 
 }
 
 function normalizeLessonTitle(value: string | undefined): string | undefined {
-  if (!value || /^(комментар(?:ий|иев)|comments?)$/i.test(value)) {
+  if (!value || /^(комментар.*|comments?)$/i.test(value)) {
     return undefined;
   }
 
@@ -378,8 +378,8 @@ function extractIdsFromUrl(url: URL): StepContext["ids"] {
 }
 
 function detectTaskContext(documentRef: Document): StepContext["task"] {
-  const choiceOptionsCount = countVisibleMatches(documentRef, CHOICE_OPTION_SELECTORS);
-  const hasChoiceOptions = choiceOptionsCount > 0;
+  const choiceOptionsCount = extractChoiceOptionTexts(documentRef).length;
+  const hasChoiceOptions = choiceOptionsCount > 0 || hasVisibleMatch(documentRef, CHOICE_OPTION_SELECTORS);
   const hasCodeEditor = hasVisibleMatch(documentRef, CODE_EDITOR_SELECTORS);
   const hasTextAnswer = hasVisibleMatch(documentRef, TEXT_ANSWER_SELECTORS);
   const hasVideo = hasVisibleMatch(documentRef, VIDEO_SELECTORS);
@@ -395,7 +395,7 @@ function detectTaskContext(documentRef: Document): StepContext["task"] {
     hasAnswerControls: hasChoiceOptions || hasCodeEditor || hasTextAnswer,
     hasChoiceOptions,
     hasCodeEditor,
-    answerOptionsCount: hasChoiceOptions ? choiceOptionsCount : undefined,
+    answerOptionsCount: choiceOptionsCount > 0 ? choiceOptionsCount : undefined,
   });
 }
 

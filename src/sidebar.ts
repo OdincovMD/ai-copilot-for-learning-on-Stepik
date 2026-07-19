@@ -495,6 +495,10 @@ function getReadyAnalysisSummaryText(source: LearningAnalysis["source"]): string
     return "Ответ получен от OpenAI через backend. API-ключ остается только на сервере.";
   }
 
+  if (source === "groq") {
+    return "Ответ получен от Groq через backend. API-ключ остается только на сервере.";
+  }
+
   return `Ответ получен от backend (${source}). Это deterministic mock без внешнего AI provider.`;
 }
 

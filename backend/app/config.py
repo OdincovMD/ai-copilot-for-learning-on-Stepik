@@ -12,6 +12,10 @@ class Settings:
     openai_model: str | None
     openai_base_url: str
     openai_timeout_seconds: int
+    groq_api_key: str | None
+    groq_model: str | None
+    groq_base_url: str
+    groq_timeout_seconds: int
     ollama_base_url: str | None
     ollama_model: str | None
     ollama_timeout_seconds: int | None
@@ -31,6 +35,10 @@ def get_settings() -> Settings:
         openai_model=parse_optional_str_env("OPENAI_MODEL"),
         openai_base_url=parse_required_str_env("OPENAI_BASE_URL").rstrip("/"),
         openai_timeout_seconds=parse_required_positive_int_env("OPENAI_TIMEOUT_SECONDS"),
+        groq_api_key=parse_optional_str_env("GROQ_API_KEY"),
+        groq_model=parse_optional_str_env("GROQ_MODEL"),
+        groq_base_url=parse_required_str_env("GROQ_BASE_URL").rstrip("/"),
+        groq_timeout_seconds=parse_required_positive_int_env("GROQ_TIMEOUT_SECONDS"),
         ollama_base_url=parse_optional_str_env("OLLAMA_BASE_URL"),
         ollama_model=parse_optional_str_env("OLLAMA_MODEL"),
         ollama_timeout_seconds=parse_optional_positive_int_env("OLLAMA_TIMEOUT_SECONDS"),

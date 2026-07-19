@@ -94,6 +94,9 @@ type ApiError = {
 `ANALYSIS_PROVIDER=openai` переключает `/analyze-step` на OpenAI Responses API;
 для этого нужны `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` и
 `OPENAI_TIMEOUT_SECONDS` в `.env`. Ключи никогда не попадают в extension.
+`ANALYSIS_PROVIDER=groq` переключает `/analyze-step` на Groq chat completions
+через OpenAI-compatible API; для этого нужны `GROQ_API_KEY`, `GROQ_MODEL`,
+`GROQ_BASE_URL` и `GROQ_TIMEOUT_SECONDS` в `.env`.
 
 ### Локальная Ollama
 
@@ -387,14 +390,14 @@ type LearningRequest = {
 
 Блок `Ответ Copilot` отправляет `LearningRequest` в FastAPI backend по адресу
 из `VITE_BACKEND_URL`. Provider выбирается через `ANALYSIS_PROVIDER`: mock для
-детерминированного теста, ollama для бесплатной локальной модели, openai для
-серверного внешнего provider.
+детерминированного теста, ollama для бесплатной локальной модели, openai или
+groq для серверного внешнего provider.
 
 ```ts
 type LearningAnalysis = {
   version: "learning-analysis-v1";
   mode: "explain" | "hint" | "notes";
-  source: "backend-mock" | "ollama" | "openai";
+  source: "backend-mock" | "ollama" | "openai" | "groq";
   summary: string;
   focusPoints: string[];
   commentInsights: string[];

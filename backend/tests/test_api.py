@@ -14,6 +14,10 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 os.environ.setdefault("OPENAI_MODEL", "gpt-5.2")
 os.environ.setdefault("OPENAI_BASE_URL", "https://api.openai.com/v1")
 os.environ.setdefault("OPENAI_TIMEOUT_SECONDS", "45")
+os.environ.setdefault("GROQ_API_KEY", "")
+os.environ.setdefault("GROQ_MODEL", "openai/gpt-oss-120b")
+os.environ.setdefault("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+os.environ.setdefault("GROQ_TIMEOUT_SECONDS", "45")
 os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
 os.environ.setdefault("OLLAMA_MODEL", "qwen2.5:3b")
 os.environ.setdefault("OLLAMA_TIMEOUT_SECONDS", "90")
@@ -25,7 +29,7 @@ os.environ.setdefault("MAX_COMMENT_CHARS", "1200")
 os.environ.setdefault("MAX_TOTAL_REQUEST_CHARS", "32000")
 
 from app.main import app
-from app.providers import AnalysisProviderError, OllamaAnalysisProvider, OpenAIAnalysisProvider
+from app.providers import AnalysisProviderError, GroqAnalysisProvider, OllamaAnalysisProvider, OpenAIAnalysisProvider
 
 
 async def make_request(method: str, path: str, json: dict | None = None) -> httpx.Response:
@@ -290,6 +294,95 @@ def test_openai_provider_posts_responses_request_and_parses_structured_output(mo
     assert captured["json"]["text"]["format"]["type"] == "json_schema"
     assert captured["json"]["text"]["format"]["strict"] is True
     assert "learning-request-v1" in captured["json"]["input"][1]["content"][0]["text"]
+
+
+def test_groq_provider_without_key_returns_config_error(monkeypatch) -> None:
+    from app import main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(
+            main_module.settings,
+            analysis_provider="groq",
+            groq_api_key=None,
+            groq_model="openai/gpt-oss-120b",
+        ),
+    )
+
+    response = asyncio.run(make_request("POST", "/analyze-step", json=make_learning_request()))
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["error"]["code"] == "provider_config_error"
+    assert "GROQ_API_KEY must be set" in payload["error"]["message"]
+    assert payload["error"]["requestId"] == response.headers["X-Request-Id"]
+
+
+def test_groq_provider_posts_chat_completion_request_and_parses_structured_output(monkeypatch) -> None:
+    from app import providers as providers_module
+    from app import main as main_module
+
+    captured: dict[str, Any] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, Any]):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"summary":"Через API","focusPoints":["Идея"],'
+                                    '"commentInsights":["Комментарий"],"selfCheck":["Вопрос"],'
+                                    '"needsMoreContext":"Не нужен","warnings":["Без прямого ответа"]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(providers_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    settings = replace(
+        main_module.settings,
+        analysis_provider="groq",
+        groq_api_key="test-key",
+        groq_model="openai/gpt-oss-120b",
+        groq_base_url="https://api.groq.example/openai/v1",
+        groq_timeout_seconds=15,
+    )
+    provider = GroqAnalysisProvider(settings)
+    request = main_module.LearningRequest.model_validate(make_learning_request())
+
+    analysis = asyncio.run(provider.analyze(request))
+
+    assert analysis.source == "groq"
+    assert analysis.mode == "hint"
+    assert analysis.summary == "Через API"
+    assert captured["timeout"] == 15
+    assert captured["url"] == "https://api.groq.example/openai/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["json"]["model"] == "openai/gpt-oss-120b"
+    assert captured["json"]["messages"][0]["role"] == "system"
+    assert "learning-request-v1" in captured["json"]["messages"][1]["content"]
+    assert captured["json"]["response_format"]["type"] == "json_schema"
+    assert captured["json"]["response_format"]["json_schema"]["strict"] is True
 
 
 def test_ollama_provider_without_model_returns_config_error(monkeypatch) -> None:
