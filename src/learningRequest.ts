@@ -95,9 +95,10 @@ export function serializeLearningRequest(request: LearningRequest): string {
 
 function buildInstruction(currentStep: StepPayload, mode: LearningMode): string {
   const baseInstruction = getModeInstruction(mode);
+  const taskPolicyInstruction = getTaskPolicyInstruction(currentStep.context.task.kind);
   const antiCheatingInstruction = getAntiCheatingInstruction(currentStep.context.task.kind);
 
-  return [baseInstruction, antiCheatingInstruction].filter(Boolean).join(" ");
+  return [baseInstruction, taskPolicyInstruction, antiCheatingInstruction].filter(Boolean).join(" ");
 }
 
 function getModeInstruction(mode: LearningMode): string {
@@ -109,6 +110,26 @@ function getModeInstruction(mode: LearningMode): string {
     case "notes":
       return "Подготовь краткий Markdown-конспект по текущему шагу и доступному предыдущему контексту. Сохрани структуру, термины и важные предупреждения.";
   }
+}
+
+function getTaskPolicyInstruction(kind: StepPayload["context"]["task"]["kind"]): string {
+  if (kind === "choice") {
+    return "Формат ответа для теста: сначала объясни проверяемый принцип, затем дай 2-4 нейтральных вопроса для исключения неверных рассуждений без разбора конкретных вариантов.";
+  }
+
+  if (kind === "code") {
+    return "Формат ответа для кода: дай план решения, инварианты, крайние случаи и идеи тестов; допускаются короткие псевдошаги, но не полный финальный код.";
+  }
+
+  if (kind === "text") {
+    return "Формат ответа для текстового ответа: помоги сформулировать критерии хорошего ответа, структуру рассуждения и проверку полноты, не подставляя готовую формулировку.";
+  }
+
+  if (kind === "video") {
+    return "Формат ответа для видео: делай конспект и вопросы только по видимому тексту страницы и доступному контексту; честно отметь, если содержания видео нет в DOM.";
+  }
+
+  return "Формат ответа: адаптируй подсказку к видимому типу задания и явно отделяй факты из страницы от предположений.";
 }
 
 function getAntiCheatingInstruction(kind: StepPayload["context"]["task"]["kind"]): string {

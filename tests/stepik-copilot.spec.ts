@@ -16,6 +16,12 @@ import {
   type LearningMode,
   type LearningRequest,
 } from "../src/learningRequest";
+import {
+  LEARNING_FEEDBACK_STORAGE_KEY,
+  readLearningFeedbackLog,
+  saveLearningFeedback,
+  type LearningFeedbackRecord,
+} from "../src/learningFeedback";
 import type { LearningAnalysis } from "../src/learningAnalysis";
 import type { StepPayload } from "../src/stepPayload";
 
@@ -125,6 +131,40 @@ function createStepCache(payloads: StepPayload[]): StepCache {
       return [createStepCacheKey(payload), createContextStepSnapshot(payload, `2026-07-09T00:00:0${index}.000Z`)];
     }),
   );
+}
+
+function createMockFeedbackRecord(index: number): LearningFeedbackRecord {
+  const payload = createMockStepPayload({ stepPosition: `${index}`, kind: "choice" });
+  const request = buildLearningRequest(payload, undefined, "hint");
+  const analysis: LearningAnalysis = {
+    version: "learning-analysis-v1",
+    mode: "hint",
+    source: "backend-mock",
+    summary: `Feedback summary ${index}`,
+    focusPoints: ["Focus"],
+    commentInsights: ["Insight"],
+    selfCheck: ["Check"],
+    needsMoreContext: "No",
+    warnings: [],
+  };
+
+  return {
+    id: `feedback-${index}`,
+    createdAt: `2026-07-09T00:00:${String(index).padStart(2, "0")}.000Z`,
+    url: payload.url,
+    mode: request.mode,
+    taskKind: payload.context.task.kind,
+    answerOptionsCount: payload.context.task.answerOptionsCount,
+    source: analysis.source,
+    requestSummary: {
+      currentMarkdownLength: request.input.currentStep.markdown.length,
+      previousStepsCount: request.input.previousSteps.length,
+      commentsCount: request.input.comments.length,
+    },
+    request,
+    analysis,
+    feedbackReason: index % 2 === 0 ? "useful" : "too_direct",
+  };
 }
 
 test("uses Stepik document title metadata when lesson DOM text is comments noise", async ({ page }) => {
@@ -313,6 +353,8 @@ test("strengthens guardrails for choice steps", () => {
 
   expect(request.guardrails.noDirectAnswers).toBe(true);
   expect(request.guardrails.noMultipleChoiceOptionLeak).toBe(true);
+  expect(request.instruction).toContain("проверяемый принцип");
+  expect(request.instruction).toContain("без разбора конкретных вариантов");
   expect(request.instruction).toContain("не выбирай вариант ответа");
   expect(request.instruction).toContain("не раскрывай прямой ответ");
   expect(request.instruction).toContain("Не перечисляй и не переформулируй все варианты");
@@ -325,7 +367,19 @@ test("uses hint mode without asking for a final solution", () => {
 
   expect(request.mode).toBe("hint" satisfies LearningMode);
   expect(request.instruction).toContain("без готового решения");
+  expect(request.instruction).toContain("план решения");
+  expect(request.instruction).toContain("идеи тестов");
   expect(request.instruction).toContain("не пиши финальное решение целиком");
+});
+
+test("builds task-aware policies for text and video steps", () => {
+  const textRequest = buildLearningRequest(createMockStepPayload({ stepPosition: "6", kind: "text" }), undefined, "explain");
+  const videoRequest = buildLearningRequest(createMockStepPayload({ stepPosition: "7", kind: "video" }), undefined, "notes");
+
+  expect(textRequest.instruction).toContain("критерии хорошего ответа");
+  expect(textRequest.instruction).toContain("не подставляя готовую формулировку");
+  expect(videoRequest.instruction).toContain("только по видимому тексту страницы");
+  expect(videoRequest.instruction).toContain("если содержания видео нет в DOM");
 });
 
 test("builds a stable mock learning analysis", () => {
@@ -356,6 +410,39 @@ test("builds graceful mock comment insights without comments", () => {
 
   expect(analysis.commentInsights).toEqual(["Видимых комментариев нет, поэтому mock не делает выводов по обсуждению."]);
   expect(analysis.needsMoreContext).toContain("Контекст ограничен текущим шагом");
+});
+
+test("stores only the latest fifty learning feedback records", async () => {
+  const storedValues = new Map<string, string>();
+  const previousLocalStorage = globalThis.localStorage;
+  const fakeLocalStorage = {
+    getItem: (key: string) => storedValues.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storedValues.set(key, value);
+    },
+  } as Storage;
+
+  Object.defineProperty(globalThis, "localStorage", {
+    value: fakeLocalStorage,
+    configurable: true,
+  });
+
+  try {
+    for (let index = 0; index < 55; index += 1) {
+      await saveLearningFeedback(createMockFeedbackRecord(index));
+    }
+
+    const log = await readLearningFeedbackLog();
+    expect(log).toHaveLength(50);
+    expect(log[0].id).toBe("feedback-54");
+    expect(log[49].id).toBe("feedback-5");
+    expect(JSON.parse(storedValues.get(LEARNING_FEEDBACK_STORAGE_KEY) ?? "[]")).toHaveLength(50);
+  } finally {
+    Object.defineProperty(globalThis, "localStorage", {
+      value: previousLocalStorage,
+      configurable: true,
+    });
+  }
 });
 
 test("does not produce direct answers for choice mock analysis", () => {
@@ -393,6 +480,19 @@ test("does not produce final code solution for code mock analysis", () => {
   expect(analysis.warnings.join(" ")).toContain("не пишет финальное решение целиком");
   expect(serialized).not.toContain("готовая программа");
   expect(serialized).not.toContain("финальный код");
+});
+
+test("adapts mock analysis focus points by task kind", () => {
+  const codeAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "8", kind: "code" }), undefined, "hint"));
+  const textAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "9", kind: "text" }), undefined, "hint"));
+  const videoAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "10", kind: "video" }), undefined, "notes"));
+
+  expect(codeAnalysis.focusPoints.join(" ")).toContain("крайние случаи");
+  expect(codeAnalysis.selfCheck.join(" ")).toContain("минимальные тестовые случаи");
+  expect(textAnalysis.focusPoints.join(" ")).toContain("критерии полного ответа");
+  expect(textAnalysis.selfCheck.join(" ")).toContain("тезис");
+  expect(videoAnalysis.focusPoints.join(" ")).toContain("содержимое видео недоступно");
+  expect(videoAnalysis.selfCheck.join(" ")).toContain("не было доступно в DOM");
 });
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
@@ -1013,6 +1113,7 @@ test("renders the learning request preview and switches modes in the sidebar", a
 });
 
 test("renders backend Copilot answer and resets it when mode changes", async ({ page }) => {
+  const analysisUrl = "https://stepik.org/lesson/777001/step/8?unit=777999";
   let capturedRequest: LearningRequest | undefined;
 
   await page.route(BACKEND_ANALYZE_URL, async (route) => {
@@ -1034,29 +1135,56 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
     });
   });
 
-  await page.setContent(`
-    <!doctype html>
-    <html lang="ru">
-      <head>
-        <title>Stepik mock analysis sidebar</title>
-        <style>
-          body { margin: 0; min-height: 900px; font-family: sans-serif; }
-          .step-inner__text, .comment__text { display: block; }
-        </style>
-      </head>
-      <body>
-        <main>
-          <h1 class="lesson-title">Тестовый урок</h1>
-          <section class="step-inner__text">Выберите один вариант из списка</section>
-          <label><input type="radio" name="answer" /> первый вариант</label>
-          <label><input type="radio" name="answer" /> второй вариант</label>
-          <article class="comments__comment">
-            <p class="comment__text">Комментарий про частую ошибку.</p>
-          </article>
-        </main>
-      </body>
-    </html>
-  `);
+  await page.route(analysisUrl, async (route) => {
+    await route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      body: `
+        <!doctype html>
+        <html lang="ru">
+          <head>
+            <title>Stepik mock analysis sidebar</title>
+            <style>
+              body { margin: 0; min-height: 900px; font-family: sans-serif; }
+              .step-inner__text, .comment__text { display: block; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1 class="lesson-title">Тестовый урок</h1>
+              <section class="step-inner__text">Выберите один вариант из списка</section>
+              <label><input type="radio" name="answer" /> первый вариант</label>
+              <label><input type="radio" name="answer" /> второй вариант</label>
+              <article class="comments__comment">
+                <p class="comment__text">Комментарий про частую ошибку.</p>
+              </article>
+            </main>
+          </body>
+        </html>
+      `,
+    });
+  });
+
+  await page.goto(analysisUrl);
+  await page.evaluate((storageKey) => {
+    localStorage.removeItem(storageKey);
+    Object.defineProperty(window, "__copiedText", {
+      value: "",
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) => {
+          Object.defineProperty(window, "__copiedText", {
+            value: text,
+            writable: true,
+            configurable: true,
+          });
+        },
+      },
+      configurable: true,
+    });
+  }, LEARNING_FEEDBACK_STORAGE_KEY);
   await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
 
   await page.waitForFunction(() => Boolean(document.querySelector("#stepik-copilot-root")?.shadowRoot));
@@ -1110,6 +1238,91 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   expect(generatedText).toContain("Проверь себя");
   expect(generatedText).toContain("не выбирает вариант ответа");
   expect(generatedText).toContain("backend-mock");
+  expect(generatedText).toContain("Оценить ответ");
+  expect(generatedText).toContain("Полезно");
+  expect(generatedText).toContain("Слишком прямой ответ");
+  expect(generatedText).toContain("Не понял контекст");
+  expect(generatedText).toContain("Фактическая ошибка");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    const feedbackButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-feedback-button") ?? [])
+      .find((button) => button.textContent === "Слишком прямой ответ");
+    feedbackButton?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-feedback")?.textContent ?? "";
+    });
+  }).toContain("Debug bundle");
+
+  await expect.poll(async () => {
+    return page.evaluate((storageKey) => {
+      const feedback = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{ feedbackReason: string; request: LearningRequest; analysis: LearningAnalysis }>;
+      return feedback?.length ?? 0;
+    }, LEARNING_FEEDBACK_STORAGE_KEY);
+  }).toBe(1);
+
+  let storedFeedback = await page.evaluate((storageKey) => {
+    return JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{ feedbackReason: string; request: LearningRequest; analysis: LearningAnalysis }>;
+  }, LEARNING_FEEDBACK_STORAGE_KEY);
+
+  expect(storedFeedback?.[0].feedbackReason).toBe("too_direct");
+  expect(storedFeedback?.[0].request.version).toBe("learning-request-v1");
+  expect(storedFeedback?.[0].analysis.version).toBe("learning-analysis-v1");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    const feedbackButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-feedback-button") ?? [])
+      .find((button) => button.textContent === "Фактическая ошибка");
+    feedbackButton?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-feedback-button.is-selected")?.textContent ?? "";
+    });
+  }).toBe("Фактическая ошибка");
+
+  await expect.poll(async () => {
+    return page.evaluate((storageKey) => {
+      const feedback = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{ feedbackReason: string }>;
+      return feedback?.length ?? 0;
+    }, LEARNING_FEEDBACK_STORAGE_KEY);
+  }).toBe(1);
+
+  storedFeedback = await page.evaluate((storageKey) => {
+    return JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{ feedbackReason: string }>;
+  }, LEARNING_FEEDBACK_STORAGE_KEY);
+
+  expect(storedFeedback?.[0].feedbackReason).toBe("factual_error");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-debug-bundle")?.click();
+  });
+
+  const copiedBundle = await page.evaluate(() => {
+    return (window as typeof window & { __copiedText?: string }).__copiedText ?? "";
+  });
+  const parsedBundle = JSON.parse(copiedBundle) as {
+    version: string;
+    feedback: {
+      feedbackReason: string;
+      request: LearningRequest;
+      analysis: LearningAnalysis;
+    };
+  };
+
+  expect(parsedBundle.version).toBe("stepik-copilot-debug-bundle-v1");
+  expect(parsedBundle.feedback.feedbackReason).toBe("factual_error");
+  expect(parsedBundle.feedback.request.version).toBe("learning-request-v1");
+  expect(parsedBundle.feedback.analysis.version).toBe("learning-analysis-v1");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;

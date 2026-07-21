@@ -2,6 +2,13 @@ import type { ContextPack } from "./contextPack";
 import { AnalysisClientError, requestLearningAnalysis } from "./analysisClient";
 import type { LearningAnalysis } from "./learningAnalysis";
 import {
+  createLearningFeedbackRecord,
+  saveLearningFeedback,
+  serializeDebugBundle,
+  type LearningFeedbackReason,
+  type LearningFeedbackRecord,
+} from "./learningFeedback";
+import {
   buildLearningRequest,
   DEFAULT_LEARNING_MODE,
   LEARNING_MODE_LABELS,
@@ -33,8 +40,15 @@ type SidebarOptions = {
 type AnalysisState =
   | { status: "idle" }
   | { status: "analyzing" }
-  | { status: "ready"; analysis: LearningAnalysis }
+  | { status: "ready"; analysis: LearningAnalysis; feedback: FeedbackState }
   | { status: "error"; message: string };
+
+type FeedbackState = {
+  status: "idle" | "saving" | "saved" | "error";
+  selectedReason?: LearningFeedbackReason;
+  record?: LearningFeedbackRecord;
+  copyState: "idle" | "copied" | "error";
+};
 
 const HOST_ID = "stepik-copilot-root";
 const LEARNING_REQUEST_LOG_PREFIX = "[Stepik Copilot Learning Request]";
@@ -290,7 +304,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
         return;
       }
 
-      analysisState = { status: "ready", analysis };
+      analysisState = { status: "ready", analysis, feedback: createEmptyFeedbackState() };
       console.log(LEARNING_ANALYSIS_LOG_PREFIX, analysis);
     } catch (error) {
       if (requestId !== analysisRequestId) {
@@ -304,6 +318,110 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     }
 
     render();
+  }
+
+  async function submitLearningFeedback(
+    payload: StepPayload,
+    contextPack: ContextPack | undefined,
+    request: LearningRequest,
+    analysis: LearningAnalysis,
+    reason: LearningFeedbackReason,
+  ): Promise<void> {
+    if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
+      return;
+    }
+
+    const record = createLearningFeedbackRecord(payload, contextPack, request, analysis, reason);
+    analysisState = {
+      status: "ready",
+      analysis,
+      feedback: {
+        status: "saving",
+        selectedReason: reason,
+        record,
+        copyState: "idle",
+      },
+    };
+    render();
+
+    try {
+      await saveLearningFeedback(record);
+      if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
+        return;
+      }
+
+      analysisState = {
+        status: "ready",
+        analysis,
+        feedback: {
+          status: "saved",
+          selectedReason: reason,
+          record,
+          copyState: "idle",
+        },
+      };
+    } catch {
+      if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
+        return;
+      }
+
+      analysisState = {
+        status: "ready",
+        analysis,
+        feedback: {
+          status: "error",
+          selectedReason: reason,
+          record,
+          copyState: "idle",
+        },
+      };
+    }
+
+    render();
+  }
+
+  async function copyDebugBundle(analysis: LearningAnalysis, record: LearningFeedbackRecord): Promise<void> {
+    if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(serializeDebugBundle(record));
+      analysisState = {
+        status: "ready",
+        analysis,
+        feedback: {
+          ...analysisState.feedback,
+          copyState: "copied",
+        },
+      };
+    } catch {
+      analysisState = {
+        status: "ready",
+        analysis,
+        feedback: {
+          ...analysisState.feedback,
+          copyState: "error",
+        },
+      };
+    }
+
+    render();
+    window.setTimeout(() => {
+      if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
+        return;
+      }
+
+      analysisState = {
+        status: "ready",
+        analysis,
+        feedback: {
+          ...analysisState.feedback,
+          copyState: "idle",
+        },
+      };
+      render();
+    }, 1_600);
   }
 
   function createLearningRequestView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
@@ -370,7 +488,18 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     wrapper.append(header, generateButton);
 
     if (analysisState.status === "ready") {
-      wrapper.append(createAnalysisResult(analysisState.analysis));
+      wrapper.append(
+        createAnalysisResult(analysisState.analysis),
+        createLearningFeedbackPanel({
+          payload,
+          contextPack,
+          request,
+          analysis: analysisState.analysis,
+          feedback: analysisState.feedback,
+          onSelect: submitLearningFeedback,
+          onCopyDebugBundle: copyDebugBundle,
+        }),
+      );
       return wrapper;
     }
 
@@ -383,6 +512,13 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
     return wrapper;
   }
+}
+
+function createEmptyFeedbackState(): FeedbackState {
+  return {
+    status: "idle",
+    copyState: "idle",
+  };
 }
 
 function createContextView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
@@ -538,6 +674,93 @@ function createAnalysisResult(analysis: LearningAnalysis): HTMLElement {
   }
 
   return result;
+}
+
+function createLearningFeedbackPanel(options: {
+  payload: StepPayload;
+  contextPack: ContextPack | undefined;
+  request: LearningRequest;
+  analysis: LearningAnalysis;
+  feedback: FeedbackState;
+  onSelect: (
+    payload: StepPayload,
+    contextPack: ContextPack | undefined,
+    request: LearningRequest,
+    analysis: LearningAnalysis,
+    reason: LearningFeedbackReason,
+  ) => Promise<void>;
+  onCopyDebugBundle: (analysis: LearningAnalysis, record: LearningFeedbackRecord) => Promise<void>;
+}): HTMLElement {
+  const panel = createElement("div", "sc-feedback");
+  const title = createElement("div", "sc-feedback-title");
+  title.textContent = "Оценить ответ";
+  const hint = createElement("p", "sc-feedback-hint");
+  hint.textContent = getFeedbackHint(options.feedback);
+  const buttons = createElement("div", "sc-feedback-options");
+
+  FEEDBACK_OPTIONS.forEach((option) => {
+    const isSelected = options.feedback.selectedReason === option.reason;
+    const button = createElement("button", `sc-feedback-button ${isSelected ? "is-selected" : ""}`) as HTMLButtonElement;
+    button.type = "button";
+    button.textContent = option.label;
+    button.setAttribute("aria-pressed", String(isSelected));
+    button.disabled = options.feedback.status === "saving";
+    button.addEventListener("click", () => {
+      void options.onSelect(options.payload, options.contextPack, options.request, options.analysis, option.reason);
+    });
+    buttons.append(button);
+  });
+
+  panel.append(title, hint, buttons);
+
+  if (options.feedback.record) {
+    const copyButton = createElement("button", `sc-debug-bundle is-${options.feedback.copyState}`) as HTMLButtonElement;
+    copyButton.type = "button";
+    copyButton.append(createIcon(options.feedback.copyState === "copied" ? "check" : "copy"), document.createTextNode(getDebugBundleButtonLabel(options.feedback.copyState)));
+    copyButton.addEventListener("click", () => {
+      if (options.feedback.record) {
+        void options.onCopyDebugBundle(options.analysis, options.feedback.record);
+      }
+    });
+    panel.append(copyButton);
+  }
+
+  return panel;
+}
+
+const FEEDBACK_OPTIONS: Array<{ reason: LearningFeedbackReason; label: string }> = [
+  { reason: "useful", label: "Полезно" },
+  { reason: "too_direct", label: "Слишком прямой ответ" },
+  { reason: "missed_context", label: "Не понял контекст" },
+  { reason: "factual_error", label: "Фактическая ошибка" },
+];
+
+function getFeedbackHint(feedback: FeedbackState): string {
+  if (feedback.status === "saving") {
+    return "Сохраняю оценку локально.";
+  }
+
+  if (feedback.status === "saved") {
+    return "Оценка сохранена локально. Debug bundle можно скопировать для разбора кейса.";
+  }
+
+  if (feedback.status === "error") {
+    return "Не удалось сохранить оценку, но debug bundle можно скопировать.";
+  }
+
+  return "Оценка останется только в локальном хранилище браузера.";
+}
+
+function getDebugBundleButtonLabel(copyState: "idle" | "copied" | "error"): string {
+  if (copyState === "copied") {
+    return "Debug bundle скопирован";
+  }
+
+  if (copyState === "error") {
+    return "Не удалось скопировать";
+  }
+
+  return "Скопировать debug bundle";
 }
 
 function createAnalysisSummary(analysis: LearningAnalysis): HTMLElement {
@@ -1717,6 +1940,104 @@ const SIDEBAR_CSS = `
 
   .sc-analysis-block.is-warning .sc-analysis-list li::before {
     background: var(--sc-error);
+  }
+
+  .sc-feedback {
+    display: grid;
+    gap: 9px;
+    padding: 11px;
+    background: #fbfdfc;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+  }
+
+  .sc-feedback-title {
+    color: var(--sc-ink);
+    font-size: 12px;
+    font-weight: 780;
+    line-height: 1.3;
+  }
+
+  .sc-feedback-hint {
+    margin: -4px 0 0;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 520;
+    line-height: 1.42;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-feedback-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .sc-feedback-button {
+    min-width: 0;
+    min-height: 34px;
+    padding: 7px 8px;
+    color: var(--sc-text);
+    background: #ffffff;
+    border: 1px solid var(--sc-border);
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-feedback-button:hover:not(:disabled) {
+    background: var(--sc-soft);
+    transform: translateY(-1px);
+  }
+
+  .sc-feedback-button.is-selected {
+    color: var(--sc-green-dark);
+    background: var(--sc-green-soft);
+    border-color: rgba(31, 157, 97, 0.42);
+  }
+
+  .sc-feedback-button:disabled {
+    cursor: wait;
+    opacity: 0.72;
+  }
+
+  .sc-debug-bundle {
+    width: 100%;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 12px;
+    color: var(--sc-text);
+    background: #ffffff;
+    border: 1px solid var(--sc-border-strong);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 740;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-debug-bundle:hover {
+    background: var(--sc-soft);
+    transform: translateY(-1px);
+  }
+
+  .sc-debug-bundle.is-copied {
+    color: var(--sc-green-dark);
+    border-color: rgba(31, 157, 97, 0.42);
+    background: var(--sc-green-soft);
+  }
+
+  .sc-debug-bundle.is-error {
+    color: var(--sc-error);
   }
 
   .sc-kv-list {
