@@ -4,15 +4,12 @@ import type { LearningAnalysis } from "./learningAnalysis";
 import {
   createLearningFeedbackRecord,
   saveLearningFeedback,
-  serializeDebugBundle,
   type LearningFeedbackReason,
-  type LearningFeedbackRecord,
 } from "./learningFeedback";
 import {
   buildLearningRequest,
   DEFAULT_LEARNING_MODE,
   LEARNING_MODE_LABELS,
-  serializeLearningRequest,
   type LearningMode,
   type LearningRequest,
 } from "./learningRequest";
@@ -46,13 +43,9 @@ type AnalysisState =
 type FeedbackState = {
   status: "idle" | "saving" | "saved" | "error";
   selectedReason?: LearningFeedbackReason;
-  record?: LearningFeedbackRecord;
-  copyState: "idle" | "copied" | "error";
 };
 
 const HOST_ID = "stepik-copilot-root";
-const LEARNING_REQUEST_LOG_PREFIX = "[Stepik Copilot Learning Request]";
-const LEARNING_ANALYSIS_LOG_PREFIX = "[Stepik Copilot Learning Analysis]";
 
 export function createSidebar(options: SidebarOptions): SidebarController {
   document.getElementById(HOST_ID)?.remove();
@@ -70,16 +63,12 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
   let isOpen = false;
   let state: SidebarState = { status: "idle" };
-  let copyState: "idle" | "copied" | "error" = "idle";
-  let requestCopyState: "idle" | "copied" | "error" = "idle";
   let learningMode: LearningMode = DEFAULT_LEARNING_MODE;
   let analysisState: AnalysisState = { status: "idle" };
   let analysisRequestId = 0;
 
   function setState(nextState: SidebarState): void {
     state = nextState;
-    copyState = "idle";
-    requestCopyState = "idle";
     analysisState = { status: "idle" };
     analysisRequestId += 1;
     render();
@@ -152,25 +141,12 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     appendStateContent(body);
 
     const actions = createElement("div", "sc-actions");
-    const payload = state.payload;
-    const secondaryActions = createElement("div", "sc-secondary-actions");
-    if (payload?.stepMarkdown) {
-      const copyButton = createElement("button", `sc-copy sc-secondary-button is-${copyState}`) as HTMLButtonElement;
-      copyButton.type = "button";
-      copyButton.append(createIcon(copyState === "copied" ? "check" : "copy"), document.createTextNode(getCopyButtonLabel(copyState)));
-      copyButton.addEventListener("click", () => copyMarkdown(payload.stepMarkdown));
-      secondaryActions.append(copyButton);
-    }
-
     const refreshButton = createElement("button", "sc-refresh") as HTMLButtonElement;
     refreshButton.type = "button";
     refreshButton.disabled = state.status === "collecting";
     refreshButton.append(createIcon("refresh"), document.createTextNode("Обновить данные"));
     refreshButton.addEventListener("click", options.onRefresh);
     actions.append(refreshButton);
-    if (secondaryActions.childElementCount > 0) {
-      actions.append(secondaryActions);
-    }
 
     const footer = createElement("footer", "sc-footer");
     const version = createElement("span");
@@ -235,12 +211,8 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 
     fragment.append(
       createOverview(payload, state.contextPack),
-      createLearningRequestView(payload, state.contextPack),
       createLearningAnalysisView(payload, state.contextPack),
       createSection("Контекст", createContextView(payload, state.contextPack)),
-      createSection("Текст шага", createStepContentView(payload)),
-      createSection("Комментарии", createCommentsView(payload)),
-      createTechnicalDisclosure(payload),
     );
 
     return fragment;
@@ -252,43 +224,10 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     setState,
   };
 
-  async function copyMarkdown(markdown: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(markdown);
-      copyState = "copied";
-    } catch {
-      copyState = "error";
-    }
-
-    render();
-    window.setTimeout(() => {
-      copyState = "idle";
-      render();
-    }, 1_600);
-  }
-
-  async function copyLearningRequest(serializedRequest: string, request: LearningRequest): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(serializedRequest);
-      requestCopyState = "copied";
-      console.log(LEARNING_REQUEST_LOG_PREFIX, request);
-    } catch {
-      requestCopyState = "error";
-    }
-
-    render();
-    window.setTimeout(() => {
-      requestCopyState = "idle";
-      render();
-    }, 1_600);
-  }
-
-  function setLearningMode(nextMode: LearningMode, request: LearningRequest): void {
+  function setLearningMode(nextMode: LearningMode): void {
     learningMode = nextMode;
-    requestCopyState = "idle";
     analysisState = { status: "idle" };
     analysisRequestId += 1;
-    console.log(LEARNING_REQUEST_LOG_PREFIX, request);
     render();
   }
 
@@ -305,7 +244,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
       }
 
       analysisState = { status: "ready", analysis, feedback: createEmptyFeedbackState() };
-      console.log(LEARNING_ANALYSIS_LOG_PREFIX, analysis);
     } catch (error) {
       if (requestId !== analysisRequestId) {
         return;
@@ -338,8 +276,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
       feedback: {
         status: "saving",
         selectedReason: reason,
-        record,
-        copyState: "idle",
       },
     };
     render();
@@ -356,8 +292,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
         feedback: {
           status: "saved",
           selectedReason: reason,
-          record,
-          copyState: "idle",
         },
       };
     } catch {
@@ -371,8 +305,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
         feedback: {
           status: "error",
           selectedReason: reason,
-          record,
-          copyState: "idle",
         },
       };
     }
@@ -380,91 +312,21 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     render();
   }
 
-  async function copyDebugBundle(analysis: LearningAnalysis, record: LearningFeedbackRecord): Promise<void> {
-    if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(serializeDebugBundle(record));
-      analysisState = {
-        status: "ready",
-        analysis,
-        feedback: {
-          ...analysisState.feedback,
-          copyState: "copied",
-        },
-      };
-    } catch {
-      analysisState = {
-        status: "ready",
-        analysis,
-        feedback: {
-          ...analysisState.feedback,
-          copyState: "error",
-        },
-      };
-    }
-
-    render();
-    window.setTimeout(() => {
-      if (analysisState.status !== "ready" || analysisState.analysis !== analysis) {
-        return;
-      }
-
-      analysisState = {
-        status: "ready",
-        analysis,
-        feedback: {
-          ...analysisState.feedback,
-          copyState: "idle",
-        },
-      };
-      render();
-    }, 1_600);
-  }
-
-  function createLearningRequestView(payload: StepPayload, contextPack: ContextPack | undefined): HTMLElement {
-    const request = buildLearningRequest(payload, contextPack, learningMode);
-    const serializedRequest = serializeLearningRequest(request);
-    const wrapper = createElement("section", "sc-learning");
-
-    const header = createElement("div", "sc-learning-header");
-    const title = createElement("h2", "sc-section-title");
-    title.textContent = "Учебный запрос";
-    const summary = createElement("p", "sc-learning-summary");
-    summary.textContent = createLearningSummary(request);
-    header.append(title, summary);
-
+  function createLearningModeSwitcher(): HTMLElement {
+    const wrapper = createElement("div", "sc-mode");
+    const label = createElement("div", "sc-mode-label");
+    label.textContent = "Режим помощи";
     const switcher = createElement("div", "sc-mode-switcher");
     (Object.keys(LEARNING_MODE_LABELS) as LearningMode[]).forEach((mode) => {
       const button = createElement("button", `sc-mode-button ${mode === learningMode ? "is-active" : ""}`) as HTMLButtonElement;
       button.type = "button";
       button.textContent = LEARNING_MODE_LABELS[mode];
       button.setAttribute("aria-pressed", String(mode === learningMode));
-      button.addEventListener("click", () => setLearningMode(mode, buildLearningRequest(payload, contextPack, mode)));
+      button.addEventListener("click", () => setLearningMode(mode));
       switcher.append(button);
     });
 
-    const meta = createElement("div", "sc-learning-meta");
-    meta.append(
-      createLearningMetaItem("Текущий шаг", `${request.input.currentStep.markdown.length} MD символов`),
-      createLearningMetaItem("Контекст", `${request.input.previousSteps.length} пред. шагов`),
-      createLearningMetaItem("Комментарии", `${request.input.comments.length}`),
-      createLearningMetaItem("Guardrails", "включены"),
-    );
-
-    const preview = createElement("pre", "sc-request-preview");
-    const code = createElement("code");
-    code.textContent = serializedRequest;
-    preview.append(code);
-
-    const copyButton = createElement("button", `sc-copy-request is-${requestCopyState}`) as HTMLButtonElement;
-    copyButton.type = "button";
-    copyButton.append(createIcon(requestCopyState === "copied" ? "check" : "copy"), document.createTextNode(getRequestCopyButtonLabel(requestCopyState)));
-    copyButton.addEventListener("click", () => copyLearningRequest(serializedRequest, request));
-
-    wrapper.append(header, switcher, meta, preview, copyButton);
+    wrapper.append(label, switcher);
 
     return wrapper;
   }
@@ -485,7 +347,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState)));
     generateButton.addEventListener("click", () => generateLearningAnalysis(request));
 
-    wrapper.append(header, generateButton);
+    wrapper.append(header, createLearningModeSwitcher(), generateButton);
 
     if (analysisState.status === "ready") {
       wrapper.append(
@@ -497,7 +359,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
           analysis: analysisState.analysis,
           feedback: analysisState.feedback,
           onSelect: submitLearningFeedback,
-          onCopyDebugBundle: copyDebugBundle,
         }),
       );
       return wrapper;
@@ -517,7 +378,6 @@ export function createSidebar(options: SidebarOptions): SidebarController {
 function createEmptyFeedbackState(): FeedbackState {
   return {
     status: "idle",
-    copyState: "idle",
   };
 }
 
@@ -566,33 +426,14 @@ function createMetric(labelText: string, valueText: string, captionText: string)
   return metric;
 }
 
-function createLearningMetaItem(labelText: string, valueText: string): HTMLElement {
-  const item = createElement("div", "sc-learning-meta-item");
-  const label = createElement("span", "sc-learning-meta-label");
-  label.textContent = labelText;
-  const value = createElement("strong");
-  value.textContent = valueText;
-  item.append(label, value);
-
-  return item;
-}
-
-function createLearningSummary(request: LearningRequest): string {
-  const modeLabel = LEARNING_MODE_LABELS[request.mode].toLowerCase();
-  const previousSteps = request.input.previousSteps.length;
-  const comments = request.input.comments.length;
-
-  return `Локальный preview для режима «${modeLabel}»: текущий шаг, ${formatPreviousSteps(previousSteps)}, ${formatCommentsCount(comments)} и anti-cheating guardrails.`;
-}
-
 function createAnalysisEmptyState(status: "idle" | "analyzing"): HTMLElement {
   const empty = createElement("div", "sc-analysis-empty");
   const title = createElement("div", "sc-analysis-empty-title");
-  title.textContent = status === "analyzing" ? "Отправляю запрос в backend" : "Backend пока не вызван";
+  title.textContent = status === "analyzing" ? "Готовлю ответ" : "Готов к анализу";
   const text = createElement("p", "sc-analysis-empty-text");
   text.textContent = status === "analyzing"
-    ? "Жду structured response от FastAPI-сервиса из VITE_BACKEND_URL."
-    : "Этот блок покажет ответ backend. Для бесплатной локальной проверки можно выбрать ANALYSIS_PROVIDER=ollama.";
+    ? "Обычно это занимает несколько секунд."
+    : "Нажмите кнопку, чтобы получить краткое объяснение, слабые места и чеклист.";
   empty.append(title, text);
 
   return empty;
@@ -601,7 +442,7 @@ function createAnalysisEmptyState(status: "idle" | "analyzing"): HTMLElement {
 function createAnalysisErrorState(message: string): HTMLElement {
   const error = createElement("div", "sc-analysis-empty is-error");
   const title = createElement("div", "sc-analysis-empty-title");
-  title.textContent = "Backend не ответил";
+  title.textContent = "Не удалось получить ответ";
   const text = createElement("p", "sc-analysis-empty-text");
   text.textContent = message;
   error.append(title, text);
@@ -612,42 +453,42 @@ function createAnalysisErrorState(message: string): HTMLElement {
 function getAnalysisSummaryText(state: AnalysisState): string {
   switch (state.status) {
     case "analyzing":
-      return "Отправляем LearningRequest в локальный FastAPI backend. Provider выбирается в .env.";
+      return "Анализирую текущий шаг и видимые комментарии.";
     case "ready":
       return getReadyAnalysisSummaryText(state.analysis.source);
     case "error":
-      return "Не удалось получить ответ backend. Данные шага остаются локально в сайдбаре.";
+      return "Запрос не завершился. Можно попробовать еще раз.";
     case "idle":
-      return "Сформируйте backend-preview ответа, чтобы проверить связку extension → FastAPI → extension.";
+      return "Получите подсказки без готового ответа на задание.";
   }
 }
 
 function getReadyAnalysisSummaryText(source: LearningAnalysis["source"]): string {
   if (source === "ollama") {
-    return "Ответ получен от локальной Ollama через backend. API-ключи и внешний AI не использовались.";
+    return "Ответ готов. Данные обработаны локальной моделью.";
   }
 
   if (source === "openai") {
-    return "Ответ получен от OpenAI через backend. API-ключ остается только на сервере.";
+    return "Ответ готов. Ключи остаются на сервере.";
   }
 
   if (source === "groq") {
-    return "Ответ получен от Groq через backend. API-ключ остается только на сервере.";
+    return "Ответ готов. Ключи остаются на сервере.";
   }
 
-  return `Ответ получен от backend (${source}). Это deterministic mock без внешнего AI provider.`;
+  return "Preview ответа готов.";
 }
 
 function getGenerateAnalysisButtonLabel(state: AnalysisState): string {
   switch (state.status) {
     case "analyzing":
-      return "Отправляю в backend";
+      return "Анализирую";
     case "ready":
-      return "Пересобрать backend-preview";
+      return "Обновить ответ";
     case "error":
       return "Повторить запрос";
     case "idle":
-      return "Сформировать preview ответа";
+      return "Получить подсказки";
   }
 }
 
@@ -656,7 +497,7 @@ function getAnalysisErrorMessage(error: unknown): string {
     return error.requestId ? `${error.message} Request ID: ${error.requestId}` : error.message;
   }
 
-  return "Непредвиденная ошибка при запросе к backend.";
+  return "Непредвиденная ошибка при запросе анализа.";
 }
 
 function createAnalysisResult(analysis: LearningAnalysis): HTMLElement {
@@ -689,7 +530,6 @@ function createLearningFeedbackPanel(options: {
     analysis: LearningAnalysis,
     reason: LearningFeedbackReason,
   ) => Promise<void>;
-  onCopyDebugBundle: (analysis: LearningAnalysis, record: LearningFeedbackRecord) => Promise<void>;
 }): HTMLElement {
   const panel = createElement("div", "sc-feedback");
   const title = createElement("div", "sc-feedback-title");
@@ -713,18 +553,6 @@ function createLearningFeedbackPanel(options: {
 
   panel.append(title, hint, buttons);
 
-  if (options.feedback.record) {
-    const copyButton = createElement("button", `sc-debug-bundle is-${options.feedback.copyState}`) as HTMLButtonElement;
-    copyButton.type = "button";
-    copyButton.append(createIcon(options.feedback.copyState === "copied" ? "check" : "copy"), document.createTextNode(getDebugBundleButtonLabel(options.feedback.copyState)));
-    copyButton.addEventListener("click", () => {
-      if (options.feedback.record) {
-        void options.onCopyDebugBundle(options.analysis, options.feedback.record);
-      }
-    });
-    panel.append(copyButton);
-  }
-
   return panel;
 }
 
@@ -737,30 +565,18 @@ const FEEDBACK_OPTIONS: Array<{ reason: LearningFeedbackReason; label: string }>
 
 function getFeedbackHint(feedback: FeedbackState): string {
   if (feedback.status === "saving") {
-    return "Сохраняю оценку локально.";
+    return "Сохраняю оценку.";
   }
 
   if (feedback.status === "saved") {
-    return "Оценка сохранена локально. Debug bundle можно скопировать для разбора кейса.";
+    return "Спасибо, оценка сохранена.";
   }
 
   if (feedback.status === "error") {
-    return "Не удалось сохранить оценку, но debug bundle можно скопировать.";
+    return "Не удалось сохранить оценку.";
   }
 
-  return "Оценка останется только в локальном хранилище браузера.";
-}
-
-function getDebugBundleButtonLabel(copyState: "idle" | "copied" | "error"): string {
-  if (copyState === "copied") {
-    return "Debug bundle скопирован";
-  }
-
-  if (copyState === "error") {
-    return "Не удалось скопировать";
-  }
-
-  return "Скопировать debug bundle";
+  return "Помогите понять, насколько ответ был полезен.";
 }
 
 function createAnalysisSummary(analysis: LearningAnalysis): HTMLElement {
@@ -833,11 +649,7 @@ function createContextList(payload: StepPayload, contextPack: ContextPack | unde
   appendKeyValue(list, "Шаг", metadata.stepTitle);
   appendKeyValue(list, "Заголовок", payload.title);
   appendKeyValue(list, "Тип", getTaskKindLabel(context.task.kind));
-  appendKeyValue(list, "Источник", contextPack ? "посещенные страницы" : "текущая страница");
-  appendKeyValue(list, "Предыдущие шаги", contextPack ? `${contextPack.stats.includedPreviousSteps}` : "0");
-  appendKeyValue(list, "Lesson ID", context.ids.lessonId);
-  appendKeyValue(list, "Unit ID", context.ids.unitId);
-  appendKeyValue(list, "Позиция", context.ids.stepPosition);
+  appendKeyValue(list, "Контекст", contextPack ? formatPreviousSteps(contextPack.stats.includedPreviousSteps) : "только текущий шаг");
 
   return list;
 }
@@ -861,7 +673,7 @@ function createPreviousStepsView(contextPack: ContextPack): HTMLElement {
     heading.textContent = `${position}: ${step.title || step.metadata.stepTitle || step.url}`;
 
     const meta = createElement("div", "sc-context-step-meta");
-    meta.textContent = `${step.stepMarkdown.length} MD символов`;
+    meta.textContent = "Используется как дополнительный контекст";
 
     item.append(heading, meta);
     list.append(item);
@@ -876,41 +688,6 @@ function createPreviousStepsView(contextPack: ContextPack): HTMLElement {
   return wrapper;
 }
 
-function createTechnicalList(payload: StepPayload): HTMLElement {
-  const list = createElement("dl", "sc-kv-list");
-  const context = payload.context;
-
-  appendKeyValue(list, "URL", payload.url);
-  appendKeyValue(list, "Комментарии", `${payload.comments.length}`);
-  appendKeyValue(list, "Треды", `${context.stats.commentThreadsCount}`);
-  appendKeyValue(list, "Ответы", `${context.stats.repliesCount}`);
-  appendKeyValue(list, "Символы шага", `${payload.stepText.length}`);
-  appendKeyValue(list, "Markdown", `${payload.stepMarkdown.length}`);
-  appendKeyValue(list, "Варианты", formatOptionalNumber(context.task.answerOptionsCount));
-  appendKeyValue(list, "Controls", context.task.hasAnswerControls ? "есть" : "нет");
-  appendKeyValue(list, "Версия", context.stats.extractionVersion);
-  appendKeyValue(list, "Собрано", formatCollectedAt(context.stats.collectedAt));
-
-  return list;
-}
-
-function createTechnicalDisclosure(payload: StepPayload): HTMLElement {
-  const details = document.createElement("details");
-  details.className = "sc-technical";
-
-  const summary = document.createElement("summary");
-  summary.className = "sc-technical-summary";
-  const title = createElement("span");
-  title.textContent = "Технически";
-  const meta = createElement("span", "sc-technical-meta");
-  meta.textContent = `${payload.context.stats.extractionVersion} · ${formatCollectedAt(payload.context.stats.collectedAt)}`;
-  summary.append(title, meta, createIcon("chevron-left"));
-
-  details.append(summary, createTechnicalList(payload));
-
-  return details;
-}
-
 function getTaskKindLabel(kind: StepPayload["context"]["task"]["kind"]): string {
   const labels: Record<StepPayload["context"]["task"]["kind"], string> = {
     choice: "тест",
@@ -923,10 +700,6 @@ function getTaskKindLabel(kind: StepPayload["context"]["task"]["kind"]): string 
   return labels[kind];
 }
 
-function formatOptionalNumber(value: number | undefined): string | undefined {
-  return value === undefined ? undefined : `${value}`;
-}
-
 function formatCompactNumber(value: number): string {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
@@ -935,66 +708,24 @@ function formatCompactNumber(value: number): string {
   return `${value}`;
 }
 
-function formatCollectedAt(value: string): string {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleTimeString("ru-RU", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function getCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
-  if (copyState === "copied") {
-    return "Markdown скопирован";
-  }
-
-  if (copyState === "error") {
-    return "Не удалось скопировать";
-  }
-
-  return "Скопировать MD";
-}
-
-function getRequestCopyButtonLabel(copyState: "idle" | "copied" | "error"): string {
-  if (copyState === "copied") {
-    return "Запрос скопирован";
-  }
-
-  if (copyState === "error") {
-    return "Не удалось скопировать";
-  }
-
-  return "Скопировать запрос";
-}
-
 function getHeaderSubtitle(state: SidebarState): string {
   if (state.status === "ready" && state.contextPack) {
     return `${formatPreviousSteps(state.contextPack.stats.includedPreviousSteps)} в контексте`;
   }
 
   if (state.status === "ready") {
-    return "Текущий шаг готов к работе";
+    return "Готов помочь с шагом";
   }
 
   if (state.status === "collecting") {
-    return "Синхронизирую видимый DOM";
+    return "Собираю данные со страницы";
   }
 
-  return "Локальный DOM-прототип";
+  return "Помощник для Stepik";
 }
 
 function formatPreviousSteps(count: number): string {
   return `${count} ${pluralizeRu(count, "предыдущий шаг", "предыдущих шага", "предыдущих шагов")}`;
-}
-
-function formatCommentsCount(count: number): string {
-  return `${count} ${pluralizeRu(count, "комментарий", "комментария", "комментариев")}`;
 }
 
 function pluralizeRu(count: number, one: string, few: string, many: string): string {
@@ -1015,211 +746,6 @@ function pluralizeRu(count: number, one: string, few: string, many: string): str
   }
 
   return many;
-}
-
-function createStepContentView(payload: StepPayload): HTMLElement {
-  const markdown = payload.stepMarkdown || payload.stepText;
-
-  if (!markdown) {
-    return createParagraph("Текст шага пока не найден.", "sc-muted");
-  }
-
-  return createMarkdownPreview(markdown);
-}
-
-function createMarkdownPreview(markdown: string): HTMLElement {
-  const root = createElement("div", "sc-markdown");
-  const lines = markdown.split("\n");
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      index += 1;
-      continue;
-    }
-
-    if (trimmed === "```") {
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && lines[index].trim() !== "```") {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      index += 1;
-      root.append(createCodeBlock(codeLines.join("\n")));
-      continue;
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      const heading = createElement("div", `sc-md-heading is-h${headingMatch[1].length}`);
-      appendInlineMarkdown(heading, headingMatch[2]);
-      root.append(heading);
-      index += 1;
-      continue;
-    }
-
-    if (/^[-*]\s+/.test(trimmed)) {
-      const list = createElement("ul", "sc-md-list");
-      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-        const item = createElement("li");
-        appendInlineMarkdown(item, lines[index].trim().replace(/^[-*]\s+/, ""));
-        list.append(item);
-        index += 1;
-      }
-      root.append(list);
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const list = createElement("ol", "sc-md-list");
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
-        const item = createElement("li");
-        appendInlineMarkdown(item, lines[index].trim().replace(/^\d+\.\s+/, ""));
-        list.append(item);
-        index += 1;
-      }
-      root.append(list);
-      continue;
-    }
-
-    if (trimmed.startsWith("> ")) {
-      const quote = createElement("blockquote", "sc-md-quote");
-      const quoteLines: string[] = [];
-      while (index < lines.length && lines[index].trim().startsWith("> ")) {
-        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
-        index += 1;
-      }
-      appendInlineMarkdown(quote, quoteLines.join(" "));
-      root.append(quote);
-      continue;
-    }
-
-    const paragraphLines = [trimmed];
-    index += 1;
-    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index].trim())) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-    const paragraph = createElement("p", "sc-md-paragraph");
-    appendInlineMarkdown(paragraph, paragraphLines.join(" "));
-    root.append(paragraph);
-  }
-
-  return root;
-}
-
-function isMarkdownBlockStart(line: string): boolean {
-  return line === "```" || /^(#{1,6})\s+/.test(line) || /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line) || line.startsWith("> ");
-}
-
-function createCodeBlock(code: string): HTMLElement {
-  const pre = createElement("pre", "sc-md-code");
-  const codeElement = createElement("code");
-  codeElement.textContent = code;
-  pre.append(codeElement);
-
-  return pre;
-}
-
-function appendInlineMarkdown(parent: HTMLElement, text: string): void {
-  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parent.append(document.createTextNode(text.slice(lastIndex, match.index)));
-    }
-
-    if (match[2]) {
-      const strong = createElement("strong");
-      strong.textContent = match[2];
-      parent.append(strong);
-    } else if (match[3]) {
-      const code = createElement("code", "sc-md-inline-code");
-      code.textContent = match[3];
-      parent.append(code);
-    } else if (match[4] && match[5]) {
-      const link = createElement("a", "sc-md-link") as HTMLAnchorElement;
-      link.href = match[5];
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      link.textContent = match[4];
-      parent.append(link);
-    }
-
-    lastIndex = pattern.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    parent.append(document.createTextNode(text.slice(lastIndex)));
-  }
-}
-
-function createCommentsView(payload: StepPayload): HTMLElement {
-  if (payload.commentThreads.length > 0) {
-    return createCommentThreadsList(payload.commentThreads);
-  }
-
-  return createCommentsList(payload.comments);
-}
-
-function createCommentThreadsList(commentThreads: StepPayload["commentThreads"]): HTMLElement {
-  const list = createElement("ol", "sc-comment-threads");
-
-  commentThreads.forEach((thread) => {
-    const item = createElement("li", "sc-thread");
-    item.append(createCommentEntry(thread.root, "root"));
-
-    if (thread.replies.length > 0) {
-      const replies = createElement("ol", "sc-replies");
-      thread.replies.forEach((reply) => {
-        const replyItem = createElement("li", "sc-reply");
-        replyItem.append(createCommentEntry(reply, "reply"));
-        replies.append(replyItem);
-      });
-      item.append(replies);
-    }
-
-    list.append(item);
-  });
-
-  return list;
-}
-
-function createCommentEntry(entry: StepPayload["commentThreads"][number]["root"], kind: "root" | "reply"): HTMLElement {
-  const wrapper = createElement("div", `sc-comment-entry is-${kind}`);
-
-  if (entry.author || entry.relativeTime) {
-    const meta = createElement("div", "sc-comment-meta");
-    meta.textContent = [entry.author, entry.relativeTime].filter(Boolean).join(" · ");
-    wrapper.append(meta);
-  }
-
-  const text = createElement("p", "sc-comment-text");
-  text.textContent = entry.text;
-  wrapper.append(text);
-
-  return wrapper;
-}
-
-function createCommentsList(comments: string[]): HTMLElement {
-  if (comments.length === 0) {
-    return createParagraph("Видимые комментарии не найдены.", "sc-muted");
-  }
-
-  const list = createElement("ol", "sc-comments");
-  comments.forEach((comment) => {
-    const item = createElement("li", "sc-comment");
-    item.textContent = comment;
-    list.append(item);
-  });
-
-  return list;
 }
 
 function createSection(titleText: string, content: Node): HTMLElement {
@@ -1285,7 +811,7 @@ function createElement(tagName: string, className?: string): HTMLElement {
   return element;
 }
 
-function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh" | "sparkle" | "spinner" | "warning"): SVGElement {
+function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "sparkle" | "spinner" | "warning"): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -1295,7 +821,6 @@ function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh
     check: ["M20 6 9 17l-5-5"],
     "chevron-left": ["M15 18 9 12l6-6"],
     close: ["M18 6 6 18", "M6 6l12 12"],
-    copy: ["M8 8h10v10H8z", "M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
     refresh: ["M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"],
     sparkle: ["M12 3l1.7 5.1L19 10l-5.3 1.9L12 17l-1.7-5.1L5 10l5.3-1.9L12 3Z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"],
     spinner: ["M21 12a9 9 0 0 1-9 9"],
@@ -1645,29 +1170,17 @@ const SIDEBAR_CSS = `
     overflow-wrap: anywhere;
   }
 
-  .sc-learning {
-    padding: 0 0 17px;
-    margin: 0 0 17px;
-    border-bottom: 1px solid var(--sc-border);
-  }
-
-  .sc-learning-header {
+  .sc-mode {
     display: grid;
-    gap: 2px;
-    margin-bottom: 11px;
+    gap: 6px;
+    margin-bottom: 10px;
   }
 
-  .sc-learning-header .sc-section-title {
-    margin-bottom: 0;
-  }
-
-  .sc-learning-summary {
-    margin: 0;
+  .sc-mode-label {
     color: var(--sc-muted);
-    font-size: 12px;
-    font-weight: 520;
-    line-height: 1.42;
-    overflow-wrap: anywhere;
+    font-size: 11px;
+    font-weight: 740;
+    line-height: 1.2;
   }
 
   .sc-mode-switcher {
@@ -1706,93 +1219,6 @@ const SIDEBAR_CSS = `
     color: var(--sc-green-dark);
     background: #ffffff;
     box-shadow: 0 3px 10px rgba(17, 24, 28, 0.08);
-  }
-
-  .sc-learning-meta {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-    margin-bottom: 10px;
-  }
-
-  .sc-learning-meta-item {
-    min-width: 0;
-    display: grid;
-    gap: 3px;
-    padding: 8px 9px;
-    background: #ffffff;
-    border: 1px solid var(--sc-border);
-    border-radius: 7px;
-  }
-
-  .sc-learning-meta-label {
-    color: var(--sc-faint);
-    font-size: 10px;
-    font-weight: 740;
-    line-height: 1.2;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .sc-learning-meta-item strong {
-    min-width: 0;
-    color: var(--sc-text);
-    font-size: 12px;
-    font-weight: 700;
-    line-height: 1.25;
-    overflow-wrap: anywhere;
-  }
-
-  .sc-request-preview {
-    max-height: 190px;
-    max-width: 100%;
-    margin: 0;
-    padding: 11px;
-    color: #22312b;
-    background: #f2f6f4;
-    border: 1px solid var(--sc-border);
-    border-radius: 8px;
-    overflow: auto;
-    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-    font-size: 11px;
-    line-height: 1.45;
-    white-space: pre;
-  }
-
-  .sc-copy-request {
-    width: 100%;
-    min-height: 38px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    margin-top: 10px;
-    padding: 9px 14px;
-    color: var(--sc-text);
-    background: var(--sc-bg);
-    border: 1px solid var(--sc-border-strong);
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 740;
-    line-height: 1.2;
-    letter-spacing: 0;
-    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
-  }
-
-  .sc-copy-request:hover {
-    background: var(--sc-soft);
-    transform: translateY(-1px);
-  }
-
-  .sc-copy-request.is-copied {
-    color: var(--sc-green-dark);
-    border-color: rgba(31, 157, 97, 0.42);
-    background: var(--sc-green-soft);
-  }
-
-  .sc-copy-request.is-error {
-    color: var(--sc-error);
   }
 
   .sc-analysis {
@@ -2005,41 +1431,6 @@ const SIDEBAR_CSS = `
     opacity: 0.72;
   }
 
-  .sc-debug-bundle {
-    width: 100%;
-    min-height: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 8px 12px;
-    color: var(--sc-text);
-    background: #ffffff;
-    border: 1px solid var(--sc-border-strong);
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 740;
-    line-height: 1.2;
-    letter-spacing: 0;
-    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
-  }
-
-  .sc-debug-bundle:hover {
-    background: var(--sc-soft);
-    transform: translateY(-1px);
-  }
-
-  .sc-debug-bundle.is-copied {
-    color: var(--sc-green-dark);
-    border-color: rgba(31, 157, 97, 0.42);
-    background: var(--sc-green-soft);
-  }
-
-  .sc-debug-bundle.is-error {
-    color: var(--sc-error);
-  }
-
   .sc-kv-list {
     display: grid;
     grid-template-columns: minmax(92px, 0.44fr) minmax(0, 1fr);
@@ -2110,7 +1501,6 @@ const SIDEBAR_CSS = `
     line-height: 1.3;
   }
 
-  .sc-step-text,
   .sc-muted,
   .sc-notice-body {
     margin: 0;
@@ -2123,193 +1513,6 @@ const SIDEBAR_CSS = `
   .sc-muted,
   .sc-notice-body {
     color: var(--sc-muted);
-  }
-
-  .sc-markdown {
-    display: grid;
-    gap: 11px;
-    color: var(--sc-text);
-    font-size: 13px;
-    line-height: 1.55;
-    overflow-wrap: anywhere;
-  }
-
-  .sc-markdown > * {
-    margin: 0;
-  }
-
-  .sc-md-heading {
-    color: var(--sc-text);
-    font-weight: 760;
-    line-height: 1.28;
-    letter-spacing: 0;
-  }
-
-  .sc-md-heading.is-h1,
-  .sc-md-heading.is-h2 {
-    font-size: 15px;
-  }
-
-  .sc-md-heading.is-h3,
-  .sc-md-heading.is-h4,
-  .sc-md-heading.is-h5,
-  .sc-md-heading.is-h6 {
-    font-size: 14px;
-  }
-
-  .sc-md-paragraph {
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  .sc-md-list {
-    display: grid;
-    gap: 6px;
-    padding-left: 18px;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .sc-md-code {
-    max-width: 100%;
-    padding: 10px 11px;
-    color: #22312b;
-    background: #f2f6f4;
-    border: 1px solid var(--sc-border);
-    border-radius: 6px;
-    overflow: auto;
-    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-    font-size: 12px;
-    line-height: 1.45;
-    white-space: pre;
-  }
-
-  .sc-md-inline-code {
-    padding: 1px 4px;
-    color: #174c33;
-    background: var(--sc-green-soft);
-    border-radius: 4px;
-    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-    font-size: 12px;
-  }
-
-  .sc-md-link {
-    color: #1473e6;
-    text-decoration: none;
-    border-bottom: 1px solid rgba(20, 115, 230, 0.28);
-  }
-
-  .sc-md-link:hover {
-    border-bottom-color: currentColor;
-  }
-
-  .sc-md-quote {
-    padding: 8px 10px;
-    color: var(--sc-muted);
-    background: var(--sc-soft);
-    border-left: 3px solid var(--sc-green);
-    border-radius: 0 6px 6px 0;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .sc-comments {
-    display: grid;
-    gap: 11px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .sc-comment {
-    position: relative;
-    margin: 0;
-    padding: 0 0 0 15px;
-    color: var(--sc-text);
-    font-size: 13px;
-    line-height: 1.48;
-    overflow-wrap: anywhere;
-  }
-
-  .sc-comment::before {
-    content: "";
-    position: absolute;
-    top: 0.62em;
-    left: 0;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--sc-green);
-  }
-
-  .sc-comment-threads {
-    display: grid;
-    gap: 15px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .sc-thread {
-    margin: 0;
-    padding: 0;
-  }
-
-  .sc-comment-entry {
-    position: relative;
-    padding-left: 15px;
-  }
-
-  .sc-comment-entry::before {
-    content: "";
-    position: absolute;
-    top: 0.72em;
-    left: 0;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--sc-green);
-  }
-
-  .sc-comment-entry.is-reply {
-    padding-left: 12px;
-  }
-
-  .sc-comment-entry.is-reply::before {
-    width: 4px;
-    height: 4px;
-    background: var(--sc-muted);
-  }
-
-  .sc-comment-meta {
-    margin: 0 0 3px;
-    color: var(--sc-muted);
-    font-size: 11px;
-    font-weight: 650;
-    line-height: 1.35;
-    overflow-wrap: anywhere;
-  }
-
-  .sc-comment-text {
-    margin: 0;
-    color: var(--sc-text);
-    font-size: 13px;
-    line-height: 1.48;
-    overflow-wrap: anywhere;
-  }
-
-  .sc-replies {
-    display: grid;
-    gap: 10px;
-    margin: 10px 0 0 12px;
-    padding: 0 0 0 12px;
-    border-left: 1px solid var(--sc-border);
-    list-style: none;
-  }
-
-  .sc-reply {
-    margin: 0;
-    padding: 0;
   }
 
   .sc-notice {
@@ -2333,48 +1536,6 @@ const SIDEBAR_CSS = `
     padding: 14px 18px 18px;
     background: rgba(255, 255, 255, 0.92);
     border-top: 1px solid var(--sc-border);
-  }
-
-  .sc-secondary-actions {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .sc-copy,
-  .sc-secondary-button {
-    width: 100%;
-    min-height: 38px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 9px 14px;
-    color: var(--sc-text);
-    background: var(--sc-bg);
-    border: 1px solid var(--sc-border-strong);
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 700;
-    line-height: 1.2;
-    letter-spacing: 0;
-    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
-  }
-
-  .sc-copy:hover {
-    background: var(--sc-soft);
-    transform: translateY(-1px);
-  }
-
-  .sc-copy.is-copied {
-    color: var(--sc-green-dark);
-    border-color: rgba(31, 157, 97, 0.42);
-    background: var(--sc-green-soft);
-  }
-
-  .sc-copy.is-error {
-    color: var(--sc-error);
   }
 
   .sc-refresh {
@@ -2430,68 +1591,6 @@ const SIDEBAR_CSS = `
     white-space: nowrap;
   }
 
-  .sc-technical {
-    margin: 0;
-    padding: 0;
-    border-bottom: 0;
-  }
-
-  .sc-technical-summary {
-    min-height: 40px;
-    display: grid;
-    grid-template-columns: 7px max-content minmax(0, 1fr) 18px;
-    align-items: center;
-    gap: 10px;
-    padding: 0;
-    color: var(--sc-text);
-    cursor: pointer;
-    list-style: none;
-    font-size: 12px;
-    font-weight: 780;
-    line-height: 1.25;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-  }
-
-  .sc-technical-summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .sc-technical-summary .sc-icon {
-    color: var(--sc-muted);
-    transform: rotate(-90deg);
-    transition: transform 160ms ease;
-  }
-
-  .sc-technical[open] .sc-technical-summary .sc-icon {
-    transform: rotate(90deg);
-  }
-
-  .sc-technical-summary::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    background: var(--sc-border-strong);
-  }
-
-  .sc-technical-meta {
-    min-width: 0;
-    color: var(--sc-muted);
-    font-size: 11px;
-    font-weight: 560;
-    text-align: right;
-    text-transform: none;
-    letter-spacing: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .sc-technical .sc-kv-list {
-    padding-top: 8px;
-  }
-
   @keyframes sc-spin {
     to {
       transform: rotate(360deg);
@@ -2515,7 +1614,6 @@ const SIDEBAR_CSS = `
       grid-template-columns: 1fr;
     }
 
-    .sc-learning-meta,
     .sc-mode-switcher {
       grid-template-columns: 1fr;
     }

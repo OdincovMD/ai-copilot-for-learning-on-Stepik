@@ -49,7 +49,7 @@ export async function requestLearningAnalysis(
   const backendUrl = options.backendUrl ?? DEFAULT_BACKEND_URL;
   const timeoutMs = options.timeoutMs ?? ANALYSIS_TIMEOUT_MS;
   if (!backendUrl) {
-    throw new AnalysisClientError("Не задан VITE_BACKEND_URL для backend.");
+    throw new AnalysisClientError("Сервис анализа не настроен.");
   }
 
   const controller = new AbortController();
@@ -68,7 +68,7 @@ export async function requestLearningAnalysis(
     if (!response.ok) {
       const apiError = await readApiErrorPayload(response);
       throw new AnalysisClientError(
-        apiError?.error.message ?? `Backend вернул HTTP ${response.status}`,
+        getUserFacingApiErrorMessage(apiError?.error.code),
         {
           code: apiError?.error.code,
           requestId: apiError?.error.requestId ?? response.headers.get("X-Request-Id") ?? undefined,
@@ -91,14 +91,30 @@ export async function requestLearningAnalysis(
 
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new AnalysisClientError(
-        `Backend не ответил за ${formatTimeoutSeconds(timeoutMs)} сек. `
-        + "Для локальной Ollama это часто значит, что модель еще прогревается или отвечает медленно.",
+        `Ответ не пришел за ${formatTimeoutSeconds(timeoutMs)} сек. Попробуйте повторить запрос.`,
       );
     }
 
-    throw new AnalysisClientError("Backend недоступен. Проверьте, что FastAPI-сервис запущен на адресе из VITE_BACKEND_URL.");
+    throw new AnalysisClientError("Сервис анализа недоступен. Попробуйте повторить позже.");
   } finally {
     window.clearTimeout(timeoutId);
+  }
+}
+
+function getUserFacingApiErrorMessage(code: ApiErrorCode | undefined): string {
+  switch (code) {
+    case "payload_too_large":
+      return "Слишком много данных для анализа. Обновите страницу или попробуйте другой шаг.";
+    case "validation_error":
+      return "Не удалось подготовить данные шага для анализа.";
+    case "provider_config_error":
+      return "Сервис анализа временно не настроен.";
+    case "provider_error":
+      return "Сервис анализа временно не ответил.";
+    case "internal_error":
+      return "Сервис анализа временно недоступен.";
+    case undefined:
+      return "Сервис анализа вернул ошибку.";
   }
 }
 

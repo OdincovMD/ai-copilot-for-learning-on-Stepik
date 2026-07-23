@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -133,6 +133,22 @@ function createStepCache(payloads: StepPayload[]): StepCache {
   );
 }
 
+async function addContentScriptAndReadPayload(page: Page): Promise<StepPayload> {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "__stepikCopilotTestMode", {
+      value: true,
+      writable: true,
+      configurable: true,
+    });
+  });
+  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
+  await page.waitForFunction(() => Boolean((window as typeof window & { __stepikCopilotLastPayload?: unknown }).__stepikCopilotLastPayload));
+
+  return page.evaluate(() => {
+    return (window as typeof window & { __stepikCopilotLastPayload: StepPayload }).__stepikCopilotLastPayload;
+  });
+}
+
 function createMockFeedbackRecord(index: number): LearningFeedbackRecord {
   const payload = createMockStepPayload({ stepPosition: `${index}`, kind: "choice" });
   const request = buildLearningRequest(payload, undefined, "hint");
@@ -169,12 +185,6 @@ function createMockFeedbackRecord(index: number): LearningFeedbackRecord {
 
 test("uses Stepik document title metadata when lesson DOM text is comments noise", async ({ page }) => {
   const currentUrl = "https://stepik.org/lesson/265081/step/3?unit=246030";
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.route(currentUrl, async (route) => {
     await route.fulfill({
       contentType: "text/html; charset=utf-8",
@@ -198,11 +208,7 @@ test("uses Stepik document title metadata when lesson DOM text is comments noise
     });
   });
   await page.goto(currentUrl);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as StepPayload;
+  const payload = await addContentScriptAndReadPayload(page);
 
   expect(payload.metadata.courseTitle).toBe("\"Поколение Python\": курс для начинающих");
   expect(payload.metadata.lessonTitle).toBe("Выбор из двух");
@@ -210,12 +216,6 @@ test("uses Stepik document title metadata when lesson DOM text is comments noise
 });
 
 test("counts choice option labels without counting wrapper nodes", async ({ page }) => {
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -248,11 +248,7 @@ test("counts choice option labels without counting wrapper nodes", async ({ page
       </body>
     </html>
   `);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as StepPayload;
+  const payload = await addContentScriptAndReadPayload(page);
 
   expect(payload.metadata.lessonTitle).toBe("Функции. Часть 1");
   expect(payload.context.task.answerOptionsCount).toBe(4);
@@ -496,12 +492,6 @@ test("adapts mock analysis focus points by task kind", () => {
 });
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.route(STEPIK_STEP_URL, async (route) => {
     await route.fulfill({
       contentType: "text/html; charset=utf-8",
@@ -563,11 +553,7 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
     });
   });
   await page.goto(STEPIK_STEP_URL);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as {
+  const payload = await addContentScriptAndReadPayload(page) as {
     stepText: string;
     stepMarkdown: string;
     stepContent: {
@@ -651,12 +637,6 @@ test("extracts meaningful Stepik comments without metadata duplicates", async ({
 });
 
 test("extracts visible multiple choice assignment options without success feedback", async ({ page }) => {
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -684,11 +664,7 @@ test("extracts visible multiple choice assignment options without success feedba
       </body>
     </html>
   `);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as {
+  const payload = await addContentScriptAndReadPayload(page) as {
     stepText: string;
     stepMarkdown: string;
     context: {
@@ -726,12 +702,6 @@ test("extracts visible multiple choice assignment options without success feedba
 });
 
 test("preserves formatted step content as markdown", async ({ page }) => {
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -758,11 +728,7 @@ Token: example</code></pre>
       </body>
     </html>
   `);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as {
+  const payload = await addContentScriptAndReadPayload(page) as {
     stepText: string;
     stepMarkdown: string;
     stepContent: {
@@ -792,12 +758,6 @@ Token: example</code></pre>
 });
 
 test("extracts Stepik comment replies as structured threads", async ({ page }) => {
-  const payloadPromise = page.waitForEvent("console", async (message) => {
-    const [prefix] = message.args();
-
-    return (await prefix?.jsonValue()) === "[Stepik Copilot DOM Prototype]";
-  });
-
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -865,11 +825,7 @@ test("extracts Stepik comment replies as structured threads", async ({ page }) =
       </body>
     </html>
   `);
-  await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
-
-  const message = await payloadPromise;
-  const [, payloadHandle] = message.args();
-  const payload = await payloadHandle.jsonValue() as {
+  const payload = await addContentScriptAndReadPayload(page) as {
     comments: string[];
     commentThreads: Array<{
       root: {
@@ -969,8 +925,9 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
 
   expect(sidebarText).toContain("Stepik Copilot");
   expect(sidebarText).toContain("Данные собраны");
-  expect(sidebarText).toContain("Выберите один вариант из списка");
-  expect(sidebarText).toContain("Комментарий для проверки сайдбара.");
+  expect(sidebarText).toContain("Комментарии1видимых");
+  expect(sidebarText).toContain("Получить подсказки");
+  expect(sidebarText).not.toContain("Комментарий для проверки сайдбара.");
 });
 
 test("renders previous visited steps from the context pack in the sidebar", async ({ page }) => {
@@ -1034,12 +991,12 @@ test("renders previous visited steps from the context pack in the sidebar", asyn
     return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
   });
 
-  expect(sidebarText).toContain("посещенные страницы");
+  expect(sidebarText).toContain("1 предыдущий шаг");
   expect(sidebarText).toContain("Шаг 1");
   expect(sidebarText).toContain("Первый шаг");
 });
 
-test("renders the learning request preview and switches modes in the sidebar", async ({ page }) => {
+test("renders the help mode switcher in the sidebar", async ({ page }) => {
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -1076,25 +1033,23 @@ test("renders the learning request preview and switches modes in the sidebar", a
     return page.evaluate(() => {
       const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
 
-      return shadow?.querySelector(".sc-learning")?.textContent ?? "";
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Учебный запрос");
+  }).toContain("Режим помощи");
 
   const initialLearningState = await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
 
     return {
       activeMode: shadow?.querySelector(".sc-mode-button.is-active")?.textContent,
-      preview: shadow?.querySelector(".sc-request-preview")?.textContent,
-      copyButton: shadow?.querySelector(".sc-copy-request")?.textContent,
+      modeText: shadow?.querySelector(".sc-mode")?.textContent,
     };
   });
 
   expect(initialLearningState.activeMode).toBe("Подсказка");
-  expect(initialLearningState.preview).toContain('"mode": "hint"');
-  expect(initialLearningState.preview).toContain("Комментарий про частую ошибку.");
-  expect(initialLearningState.preview).toContain('"noDirectAnswers": true');
-  expect(initialLearningState.copyButton).toContain("Скопировать запрос");
+  expect(initialLearningState.modeText).toContain("Объяснить");
+  expect(initialLearningState.modeText).toContain("Подсказка");
+  expect(initialLearningState.modeText).toContain("Конспект");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1107,9 +1062,9 @@ test("renders the learning request preview and switches modes in the sidebar", a
     return page.evaluate(() => {
       const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
 
-      return shadow?.querySelector(".sc-request-preview")?.textContent ?? "";
+      return shadow?.querySelector(".sc-mode-button.is-active")?.textContent ?? "";
     });
-  }).toContain('"mode": "notes"');
+  }).toBe("Конспект");
 });
 
 test("renders backend Copilot answer and resets it when mode changes", async ({ page }) => {
@@ -1125,12 +1080,12 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
         version: "learning-analysis-v1",
         mode: capturedRequest.mode,
         source: "backend-mock",
-        summary: "Backend mock-подсказка проверяет связку extension и FastAPI.",
+        summary: "Copilot показывает подсказку без готового ответа на задание.",
         focusPoints: ["На что обратить внимание"],
         commentInsights: ["Что путает других"],
         selfCheck: ["Проверь себя"],
         needsMoreContext: "Контекст достаточен для mock-проверки.",
-        warnings: ["Учебный режим: backend mock не выбирает вариант ответа и не раскрывает правильный выбор."],
+        warnings: ["Учебный режим не выбирает вариант ответа и не раскрывает правильный выбор."],
       } satisfies LearningAnalysis),
     });
   });
@@ -1167,23 +1122,6 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   await page.goto(analysisUrl);
   await page.evaluate((storageKey) => {
     localStorage.removeItem(storageKey);
-    Object.defineProperty(window, "__copiedText", {
-      value: "",
-      writable: true,
-      configurable: true,
-    });
-    Object.defineProperty(navigator, "clipboard", {
-      value: {
-        writeText: async (text: string) => {
-          Object.defineProperty(window, "__copiedText", {
-            value: text,
-            writable: true,
-            configurable: true,
-          });
-        },
-      },
-      configurable: true,
-    });
   }, LEARNING_FEEDBACK_STORAGE_KEY);
   await page.addScriptTag({ path: DIST_CONTENT_SCRIPT });
 
@@ -1199,7 +1137,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Сформировать preview ответа");
+  }).toContain("Получить подсказки");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1212,7 +1150,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Отправляю в backend");
+  }).toContain("Анализирую");
 
   await expect.poll(async () => {
     return page.evaluate(() => {
@@ -1237,7 +1175,6 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   expect(generatedText).toContain("Что путает других");
   expect(generatedText).toContain("Проверь себя");
   expect(generatedText).toContain("не выбирает вариант ответа");
-  expect(generatedText).toContain("backend-mock");
   expect(generatedText).toContain("Оценить ответ");
   expect(generatedText).toContain("Полезно");
   expect(generatedText).toContain("Слишком прямой ответ");
@@ -1257,7 +1194,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-feedback")?.textContent ?? "";
     });
-  }).toContain("Debug bundle");
+  }).toContain("Спасибо, оценка сохранена.");
 
   await expect.poll(async () => {
     return page.evaluate((storageKey) => {
@@ -1304,28 +1241,6 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
-    shadow?.querySelector<HTMLButtonElement>(".sc-debug-bundle")?.click();
-  });
-
-  const copiedBundle = await page.evaluate(() => {
-    return (window as typeof window & { __copiedText?: string }).__copiedText ?? "";
-  });
-  const parsedBundle = JSON.parse(copiedBundle) as {
-    version: string;
-    feedback: {
-      feedbackReason: string;
-      request: LearningRequest;
-      analysis: LearningAnalysis;
-    };
-  };
-
-  expect(parsedBundle.version).toBe("stepik-copilot-debug-bundle-v1");
-  expect(parsedBundle.feedback.feedbackReason).toBe("factual_error");
-  expect(parsedBundle.feedback.request.version).toBe("learning-request-v1");
-  expect(parsedBundle.feedback.analysis.version).toBe("learning-analysis-v1");
-
-  await page.evaluate(() => {
-    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
     const explainButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-mode-button") ?? [])
       .find((button) => button.textContent === "Объяснить");
     explainButton?.click();
@@ -1337,7 +1252,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Backend пока не вызван");
+  }).toContain("Готов к анализу");
 });
 
 test("renders backend analysis error without breaking the sidebar", async ({ page }) => {
@@ -1390,7 +1305,7 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Сформировать preview ответа");
+  }).toContain("Получить подсказки");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1403,7 +1318,7 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Backend не ответил");
+  }).toContain("Не удалось получить ответ");
 
   const sidebarText = await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1411,12 +1326,12 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
     return shadow?.querySelector(".sc-drawer")?.textContent ?? "";
   });
 
-  expect(sidebarText).toContain("currentStep.markdown is too large");
+  expect(sidebarText).toContain("Слишком много данных для анализа");
   expect(sidebarText).toContain("req-playwright-413");
-  expect(sidebarText).toContain("Материал шага для backend error.");
+  expect(sidebarText).not.toContain("Материал шага для backend error.");
 });
 
-test("renders markdown formatting in the sidebar", async ({ page }) => {
+test("keeps raw markdown formatting out of the simplified sidebar", async ({ page }) => {
   await page.setContent(`
     <!doctype html>
     <html lang="ru">
@@ -1464,13 +1379,15 @@ test("renders markdown formatting in the sidebar", async ({ page }) => {
       inlineCode: shadow?.querySelector(".sc-md-inline-code")?.textContent,
       listItem: shadow?.querySelector(".sc-md-list li")?.textContent,
       copyButton: shadow?.querySelector(".sc-copy")?.textContent,
+      analysisText: shadow?.querySelector(".sc-analysis")?.textContent,
     };
   });
 
   expect(rendered).toEqual({
-    heading: "Настройка BotFather",
-    inlineCode: "@BotFather",
-    listItem: "Проверьте галочку.",
-    copyButton: "Скопировать MD",
+    heading: undefined,
+    inlineCode: undefined,
+    listItem: undefined,
+    copyButton: undefined,
+    analysisText: expect.stringContaining("Получить подсказки"),
   });
 });

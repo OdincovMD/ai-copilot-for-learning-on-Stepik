@@ -123,17 +123,6 @@ export function createLearningFeedbackRecord(
   };
 }
 
-export function serializeDebugBundle(record: LearningFeedbackRecord): string {
-  return JSON.stringify(
-    {
-      version: "stepik-copilot-debug-bundle-v1",
-      feedback: record,
-    },
-    null,
-    2,
-  );
-}
-
 async function writeLearningFeedbackLog(log: LearningFeedbackRecord[]): Promise<void> {
   const extensionStorage = getExtensionStorage();
   const items = { [LEARNING_FEEDBACK_STORAGE_KEY]: log };
