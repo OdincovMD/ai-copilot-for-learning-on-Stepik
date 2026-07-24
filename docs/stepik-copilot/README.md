@@ -16,6 +16,8 @@
   продуктовые защитные меры.
 - [ROADMAP.md](./ROADMAP.md) — пошаговый план развития от MVP до следующих
   итераций.
+- [BETA_EVAL_PLAN.md](./BETA_EVAL_PLAN.md) — quality gate перед закрытой beta:
+  eval-набор, rubric и критерии go / no-go.
 - [OPEN_QUESTIONS.md](./OPEN_QUESTIONS.md) — вопросы, которые нужно закрыть до
   старта разработки или публикации.
 
