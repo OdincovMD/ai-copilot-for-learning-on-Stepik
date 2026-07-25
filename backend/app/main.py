@@ -101,6 +101,12 @@ async def analyze_step(request: Request, learning_request: LearningRequest) -> L
         provider = create_analysis_provider(settings)
         return await provider.analyze(learning_request)
     except AnalysisProviderConfigError as error:
+        logger.warning(
+            "analysis provider config error provider=%s request_id=%s error=%s",
+            settings.analysis_provider,
+            get_request_id(request),
+            error,
+        )
         return api_error_response(
             code="provider_config_error",
             message=str(error),
@@ -108,6 +114,13 @@ async def analyze_step(request: Request, learning_request: LearningRequest) -> L
             status_code=500,
         )
     except AnalysisProviderError as error:
+        logger.warning(
+            "analysis provider error provider=%s request_id=%s error=%s",
+            settings.analysis_provider,
+            get_request_id(request),
+            error,
+            exc_info=True,
+        )
         return api_error_response(
             code="provider_error",
             message=str(error),

@@ -38,10 +38,10 @@ async def make_request(method: str, path: str, json: dict | None = None) -> http
         return await async_client.request(method, path, json=json)
 
 
-def make_learning_request(kind: str = "choice", comments: list[str] | None = None) -> dict:
+def make_learning_request(kind: str = "choice", comments: list[str] | None = None, mode: str = "hint") -> dict:
     return {
         "version": "learning-request-v1",
-        "mode": "hint",
+        "mode": mode,
         "language": "ru",
         "instruction": "Дай подсказку без готового ответа.",
         "guardrails": {
@@ -381,8 +381,93 @@ def test_groq_provider_posts_chat_completion_request_and_parses_structured_outpu
     assert captured["json"]["model"] == "openai/gpt-oss-120b"
     assert captured["json"]["messages"][0]["role"] == "system"
     assert "learning-request-v1" in captured["json"]["messages"][1]["content"]
+    assert "КОНТРАКТ РЕЖИМА HINT" in captured["json"]["messages"][1]["content"]
     assert captured["json"]["response_format"]["type"] == "json_schema"
     assert captured["json"]["response_format"]["json_schema"]["strict"] is True
+
+
+def test_provider_user_prompt_contains_distinct_mode_contracts() -> None:
+    from app import main as main_module
+    from app.providers import build_user_prompt
+
+    explain_request = main_module.LearningRequest.model_validate(make_learning_request(mode="explain"))
+    hint_request = main_module.LearningRequest.model_validate(make_learning_request(mode="hint"))
+    notes_request = main_module.LearningRequest.model_validate(make_learning_request(mode="notes"))
+
+    explain_prompt = build_user_prompt(explain_request)
+    hint_prompt = build_user_prompt(hint_request)
+    notes_prompt = build_user_prompt(notes_request)
+
+    assert "АКТИВНЫЙ РЕЖИМ: explain" in explain_prompt
+    assert "КОНТРАКТ РЕЖИМА EXPLAIN" in explain_prompt
+    assert "понятия, причины, предпосылки" in explain_prompt
+    assert "АКТИВНЫЙ РЕЖИМ: hint" in hint_prompt
+    assert "КОНТРАКТ РЕЖИМА HINT" in hint_prompt
+    assert "вопросы, проверки и ограничения" in hint_prompt
+    assert "АКТИВНЫЙ РЕЖИМ: notes" in notes_prompt
+    assert "КОНТРАКТ РЕЖИМА NOTES" in notes_prompt
+    assert "конспектные пункты" in notes_prompt
+    assert len({explain_prompt, hint_prompt, notes_prompt}) == 3
+
+
+def test_groq_provider_retries_temporary_errors(monkeypatch) -> None:
+    from app import providers as providers_module
+    from app import main as main_module
+
+    attempts: list[int] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, Any]):
+            attempts.append(len(attempts) + 1)
+
+            if len(attempts) < 3:
+                return httpx.Response(503, json={"error": "temporarily unavailable"})
+
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"summary":"После retry","focusPoints":["Идея"],'
+                                    '"commentInsights":["Комментарий"],"selfCheck":["Вопрос"],'
+                                    '"needsMoreContext":"Не нужен","warnings":["Без прямого ответа"]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(providers_module.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(providers_module, "get_provider_retry_delay_seconds", lambda attempt: 0)
+
+    settings = replace(
+        main_module.settings,
+        analysis_provider="groq",
+        groq_api_key="test-key",
+        groq_model="openai/gpt-oss-120b",
+        groq_base_url="https://api.groq.example/openai/v1",
+        groq_timeout_seconds=15,
+    )
+    provider = GroqAnalysisProvider(settings)
+    request = main_module.LearningRequest.model_validate(make_learning_request())
+
+    analysis = asyncio.run(provider.analyze(request))
+
+    assert attempts == [1, 2, 3]
+    assert analysis.source == "groq"
+    assert analysis.summary == "После retry"
 
 
 def test_ollama_provider_without_model_returns_config_error(monkeypatch) -> None:

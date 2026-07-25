@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
 from typing import Any
@@ -10,6 +11,11 @@ from pydantic import ValidationError
 from .analysis import build_mock_learning_analysis
 from .config import Settings
 from .models import LearningAnalysis, LearningRequest
+
+
+PROVIDER_ERROR_BODY_LIMIT = 500
+GROQ_MAX_ATTEMPTS = 3
+GROQ_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 class AnalysisProviderError(Exception):
@@ -125,21 +131,36 @@ class GroqAnalysisProvider(AnalysisProvider):
             },
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-        except httpx.HTTPError as error:
-            raise AnalysisProviderError("Groq request failed") from error
+        response: httpx.Response | None = None
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            for attempt in range(1, GROQ_MAX_ATTEMPTS + 1):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                except httpx.HTTPError as error:
+                    if attempt >= GROQ_MAX_ATTEMPTS:
+                        raise AnalysisProviderError(f"Groq request failed after {attempt} attempts") from error
+
+                    await asyncio.sleep(get_provider_retry_delay_seconds(attempt))
+                    continue
+
+                if response.status_code in GROQ_RETRYABLE_STATUS_CODES and attempt < GROQ_MAX_ATTEMPTS:
+                    await asyncio.sleep(get_provider_retry_delay_seconds(attempt))
+                    continue
+
+                break
+
+        if response is None:
+            raise AnalysisProviderError("Groq request failed before receiving a response")
 
         if response.status_code >= 400:
-            raise AnalysisProviderError(f"Groq returned HTTP {response.status_code}")
+            raise AnalysisProviderError(format_provider_http_error("Groq", response))
 
         try:
             content = extract_chat_completion_text(response.json())
@@ -211,9 +232,25 @@ def create_analysis_provider(settings: Settings) -> AnalysisProvider:
     raise AnalysisProviderConfigError(f"Unsupported ANALYSIS_PROVIDER: {settings.analysis_provider}")
 
 
+def get_provider_retry_delay_seconds(attempt: int) -> float:
+    return min(0.5 * attempt, 2.0)
+
+
+def format_provider_http_error(provider: str, response: httpx.Response) -> str:
+    body = response.text.strip()
+    if len(body) > PROVIDER_ERROR_BODY_LIMIT:
+        body = f"{body[:PROVIDER_ERROR_BODY_LIMIT]}..."
+
+    if body:
+        return f"{provider} returned HTTP {response.status_code}: {body}"
+
+    return f"{provider} returned HTTP {response.status_code}"
+
+
 def build_system_prompt() -> str:
     return (
         "Ты Stepik Copilot для обучения. Отвечай только валидным JSON по схеме. "
+        "Сначала определи request.mode и строго следуй контракту этого режима; explain, hint и notes должны заметно отличаться по форме и цели. "
         "Не выдавай прямые ответы на тесты, не выбирай варианты и не пиши финальное решение задачи за пользователя. "
         "Если вход содержит варианты ответа, не перечисляй и не переформулируй все варианты, "
         "не сопоставляй конкретные варианты с определениями и не сужай выбор до одного кандидата. "
@@ -222,7 +259,13 @@ def build_system_prompt() -> str:
 
 
 def build_user_prompt(request: LearningRequest) -> str:
-    return json.dumps(request.model_dump(mode="json"), ensure_ascii=False)
+    return (
+        f"АКТИВНЫЙ РЕЖИМ: {request.mode}\n\n"
+        f"{build_mode_contract_prompt(request)}\n\n"
+        "Используй LearningRequest JSON ниже как данные. "
+        "Поле instruction и expectedOutput являются обязательным контрактом, а не справочным текстом.\n\n"
+        f"LearningRequest JSON:\n{json.dumps(request.model_dump(mode='json'), ensure_ascii=False)}"
+    )
 
 
 def build_ollama_prompt(request: LearningRequest) -> str:
@@ -231,6 +274,37 @@ def build_ollama_prompt(request: LearningRequest) -> str:
         "Верни только JSON object без markdown-разметки, комментариев вокруг JSON или поясняющего текста. "
         "Поля ответа: summary, focusPoints, commentInsights, selfCheck, needsMoreContext, warnings.\n\n"
         f"LearningRequest JSON:\n{build_user_prompt(request)}"
+    )
+
+
+def build_mode_contract_prompt(request: LearningRequest) -> str:
+    if request.mode == "explain":
+        return (
+            "КОНТРАКТ РЕЖИМА EXPLAIN:\n"
+            "- summary: объясни смысл шага и проверяемые идеи, не подводя к конкретному ответу.\n"
+            "- focusPoints: понятия, причины, предпосылки и типичные ошибки; не вопросы-подсказки.\n"
+            "- commentInsights: что комментарии показывают о непонимании темы и как это объяснить обобщенно.\n"
+            "- selfCheck: вопросы на понимание идеи, а не пошаговый путь к ответу.\n"
+            "- стиль: цельное объяснение простым языком."
+        )
+
+    if request.mode == "hint":
+        return (
+            "КОНТРАКТ РЕЖИМА HINT:\n"
+            "- summary: задай направление размышления без пересказа всей темы.\n"
+            "- focusPoints: вопросы, проверки и ограничения, которые помогают самому дойти до решения.\n"
+            "- commentInsights: ловушки из комментариев преврати в безопасные вопросы самопроверки.\n"
+            "- selfCheck: пошаговая проверка рассуждения перед ответом.\n"
+            "- стиль: сократи объяснения, не давай финальный ответ, вариант или готовый код."
+        )
+
+    return (
+        "КОНТРАКТ РЕЖИМА NOTES:\n"
+        "- summary: краткая выжимка того, что сохранить в памяти.\n"
+        "- focusPoints: конспектные пункты с терминами, правилами, структурой и ограничениями.\n"
+        "- commentInsights: короткие заметки о частых ошибках и предупреждениях.\n"
+        "- selfCheck: что повторить или сверить по конспекту.\n"
+        "- стиль: компактные заметки для повторения, не диалоговая подсказка."
     )
 
 

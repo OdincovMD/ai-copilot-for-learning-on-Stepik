@@ -368,6 +368,36 @@ test("uses hint mode without asking for a final solution", () => {
   expect(request.instruction).toContain("не пиши финальное решение целиком");
 });
 
+test("builds distinct output contracts for every learning mode", () => {
+  const currentStep = createMockStepPayload({ stepPosition: "8", kind: "choice" });
+  const explainRequest = buildLearningRequest(currentStep, undefined, "explain");
+  const hintRequest = buildLearningRequest(currentStep, undefined, "hint");
+  const notesRequest = buildLearningRequest(currentStep, undefined, "notes");
+
+  expect(explainRequest.instruction).toContain("Режим EXPLAIN");
+  expect(hintRequest.instruction).toContain("Режим HINT");
+  expect(notesRequest.instruction).toContain("Режим NOTES");
+
+  expect(explainRequest.expectedOutput.summary).toContain("объясни смысл шага");
+  expect(hintRequest.expectedOutput.summary).toContain("направление размышления");
+  expect(notesRequest.expectedOutput.summary).toContain("выжимку конспекта");
+
+  expect(explainRequest.expectedOutput.focusPoints.join(" ")).toContain("почему это важно");
+  expect(hintRequest.expectedOutput.focusPoints.join(" ")).toContain("в форме вопросов");
+  expect(notesRequest.expectedOutput.focusPoints.join(" ")).toContain("заметки для повторения");
+
+  expect(new Set([
+    explainRequest.instruction,
+    hintRequest.instruction,
+    notesRequest.instruction,
+  ]).size).toBe(3);
+  expect(new Set([
+    explainRequest.expectedOutput.summary,
+    hintRequest.expectedOutput.summary,
+    notesRequest.expectedOutput.summary,
+  ]).size).toBe(3);
+});
+
 test("builds task-aware policies for text and video steps", () => {
   const textRequest = buildLearningRequest(createMockStepPayload({ stepPosition: "6", kind: "text" }), undefined, "explain");
   const videoRequest = buildLearningRequest(createMockStepPayload({ stepPosition: "7", kind: "video" }), undefined, "notes");
