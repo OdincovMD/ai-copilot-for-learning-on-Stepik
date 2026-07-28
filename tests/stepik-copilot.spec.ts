@@ -343,6 +343,36 @@ test("builds a learning request without comments", () => {
   expect(request.input.commentThreadsCount).toBe(0);
 });
 
+test("bounds learning request text to backend-safe limits", () => {
+  const previousSteps = Array.from({ length: 8 }, (_, index) => {
+    return createMockStepPayload({
+      stepPosition: `${index + 1}`,
+      stepMarkdown: `Предыдущий шаг ${index + 1}\n${"p".repeat(8_000)}`,
+    });
+  });
+  const currentStep = createMockStepPayload({
+    stepPosition: "9",
+    stepMarkdown: `Текущий шаг\n${"c".repeat(20_000)}`,
+    comments: Array.from({ length: 50 }, (_, index) => `Комментарий ${index + 1} ${"x".repeat(2_000)}`),
+  });
+  const contextPack = buildContextPackFromCache(currentStep, createStepCache([...previousSteps, currentStep]), {
+    maxPreviousSteps: 8,
+    maxCharacters: 60_000,
+  });
+  const request = buildLearningRequest(currentStep, contextPack, "hint");
+  const totalTextLength = request.instruction.length
+    + request.input.currentStep.markdown.length
+    + request.input.previousSteps.reduce((total, step) => total + step.markdown.length, 0)
+    + request.input.comments.reduce((total, comment) => total + comment.length, 0);
+
+  expect(request.input.currentStep.markdown.length).toBeLessThanOrEqual(12_000);
+  expect(request.input.previousSteps.length).toBeLessThanOrEqual(5);
+  expect(request.input.previousSteps.every((step) => step.markdown.length <= 6_000)).toBe(true);
+  expect(request.input.comments.length).toBeLessThanOrEqual(40);
+  expect(request.input.comments.every((comment) => comment.length <= 1_200)).toBe(true);
+  expect(totalTextLength).toBeLessThanOrEqual(32_000);
+});
+
 test("strengthens guardrails for choice steps", () => {
   const currentStep = createMockStepPayload({ stepPosition: "3", kind: "choice" });
   const request = buildLearningRequest(currentStep, undefined, "hint");
@@ -434,7 +464,7 @@ test("builds graceful mock comment insights without comments", () => {
   const request = buildLearningRequest(currentStep, undefined, DEFAULT_LEARNING_MODE);
   const analysis = buildMockLearningAnalysis(request);
 
-  expect(analysis.commentInsights).toEqual(["Видимых комментариев нет, поэтому mock не делает выводов по обсуждению."]);
+  expect(analysis.commentInsights).toEqual(["Комментариев нет: подсказка строится без ловушек из обсуждения."]);
   expect(analysis.needsMoreContext).toContain("Контекст ограничен текущим шагом");
 });
 
@@ -508,17 +538,17 @@ test("does not produce final code solution for code mock analysis", () => {
   expect(serialized).not.toContain("финальный код");
 });
 
-test("adapts mock analysis focus points by task kind", () => {
-  const codeAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "8", kind: "code" }), undefined, "hint"));
-  const textAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "9", kind: "text" }), undefined, "hint"));
-  const videoAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "10", kind: "video" }), undefined, "notes"));
+test("builds mode-specific mock analysis scenarios", () => {
+  const explainAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "8" }), undefined, "explain"));
+  const hintAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "9" }), undefined, "hint"));
+  const notesAnalysis = buildMockLearningAnalysis(buildLearningRequest(createMockStepPayload({ stepPosition: "10" }), undefined, "notes"));
 
-  expect(codeAnalysis.focusPoints.join(" ")).toContain("крайние случаи");
-  expect(codeAnalysis.selfCheck.join(" ")).toContain("минимальные тестовые случаи");
-  expect(textAnalysis.focusPoints.join(" ")).toContain("критерии полного ответа");
-  expect(textAnalysis.selfCheck.join(" ")).toContain("тезис");
-  expect(videoAnalysis.focusPoints.join(" ")).toContain("содержимое видео недоступно");
-  expect(videoAnalysis.selfCheck.join(" ")).toContain("не было доступно в DOM");
+  expect(explainAnalysis.summary).toContain("Объяснение");
+  expect(explainAnalysis.focusPoints.join(" ")).toContain("идею проверяет шаг");
+  expect(hintAnalysis.summary).toContain("следующий безопасный шаг");
+  expect(hintAnalysis.focusPoints.some((point) => point.endsWith("?"))).toBe(true);
+  expect(notesAnalysis.summary).toContain("Конспект");
+  expect(notesAnalysis.focusPoints.join(" ")).toContain("Термины:");
 });
 
 test("extracts meaningful Stepik comments without metadata duplicates", async ({ page }) => {
@@ -956,7 +986,7 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
   expect(sidebarText).toContain("Stepik Copilot");
   expect(sidebarText).toContain("Данные собраны");
   expect(sidebarText).toContain("Комментарии1видимых");
-  expect(sidebarText).toContain("Получить подсказки");
+  expect(sidebarText).toContain("Получить подсказку");
   expect(sidebarText).not.toContain("Комментарий для проверки сайдбара.");
 });
 
@@ -1081,6 +1111,21 @@ test("renders the help mode switcher in the sidebar", async ({ page }) => {
   expect(initialLearningState.modeText).toContain("Подсказка");
   expect(initialLearningState.modeText).toContain("Конспект");
 
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Получить подсказку");
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Готов к подсказке");
+
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
     const notesButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-mode-button") ?? [])
@@ -1095,6 +1140,21 @@ test("renders the help mode switcher in the sidebar", async ({ page }) => {
       return shadow?.querySelector(".sc-mode-button.is-active")?.textContent ?? "";
     });
   }).toBe("Конспект");
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Собрать конспект");
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("Готов к конспекту");
 });
 
 test("renders backend Copilot answer and resets it when mode changes", async ({ page }) => {
@@ -1167,7 +1227,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Получить подсказки");
+  }).toContain("Получить подсказку");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1180,7 +1240,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Анализирую");
+  }).toContain("Подсказываю");
 
   await expect.poll(async () => {
     return page.evaluate(() => {
@@ -1188,7 +1248,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("О чем шаг");
+  }).toContain("Куда смотреть");
 
   expect(capturedRequest?.version).toBe("learning-request-v1");
   expect(capturedRequest?.mode).toBe("hint");
@@ -1201,9 +1261,9 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
     return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
   });
 
-  expect(generatedText).toContain("На что обратить внимание");
-  expect(generatedText).toContain("Что путает других");
-  expect(generatedText).toContain("Проверь себя");
+  expect(generatedText).toContain("Куда смотреть");
+  expect(generatedText).toContain("Ловушки");
+  expect(generatedText).toContain("Проверка рассуждения");
   expect(generatedText).toContain("не выбирает вариант ответа");
   expect(generatedText).toContain("Оценить ответ");
   expect(generatedText).toContain("Полезно");
@@ -1282,7 +1342,7 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Готов к анализу");
+  }).toContain("Готов к объяснению");
 });
 
 test("renders backend analysis error without breaking the sidebar", async ({ page }) => {
@@ -1335,7 +1395,7 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
-  }).toContain("Получить подсказки");
+  }).toContain("Получить подсказку");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
@@ -1418,6 +1478,6 @@ test("keeps raw markdown formatting out of the simplified sidebar", async ({ pag
     inlineCode: undefined,
     listItem: undefined,
     copyButton: undefined,
-    analysisText: expect.stringContaining("Получить подсказки"),
+    analysisText: expect.stringContaining("Получить подсказку"),
   });
 });

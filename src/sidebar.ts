@@ -338,13 +338,13 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     const title = createElement("h2", "sc-section-title");
     title.textContent = "Ответ Copilot";
     const summary = createElement("p", "sc-analysis-summary");
-    summary.textContent = getAnalysisSummaryText(analysisState);
+    summary.textContent = getAnalysisSummaryText(analysisState, learningMode);
     header.append(title, summary);
 
     const generateButton = createElement("button", "sc-generate-analysis") as HTMLButtonElement;
     generateButton.type = "button";
     generateButton.disabled = analysisState.status === "analyzing";
-    generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState)));
+    generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState, learningMode)));
     generateButton.addEventListener("click", () => generateLearningAnalysis(request));
 
     wrapper.append(header, createLearningModeSwitcher(), generateButton);
@@ -369,7 +369,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
       return wrapper;
     }
 
-    wrapper.append(createAnalysisEmptyState(analysisState.status));
+    wrapper.append(createModeAwareAnalysisEmptyState(analysisState.status, learningMode));
 
     return wrapper;
   }
@@ -427,13 +427,16 @@ function createMetric(labelText: string, valueText: string, captionText: string)
 }
 
 function createAnalysisEmptyState(status: "idle" | "analyzing"): HTMLElement {
+  return createModeAwareAnalysisEmptyState(status, DEFAULT_LEARNING_MODE);
+}
+
+function createModeAwareAnalysisEmptyState(status: "idle" | "analyzing", mode: LearningMode): HTMLElement {
+  const copy = getAnalysisModeCopy(mode);
   const empty = createElement("div", "sc-analysis-empty");
   const title = createElement("div", "sc-analysis-empty-title");
-  title.textContent = status === "analyzing" ? "Готовлю ответ" : "Готов к анализу";
+  title.textContent = status === "analyzing" ? copy.analyzingTitle : copy.emptyTitle;
   const text = createElement("p", "sc-analysis-empty-text");
-  text.textContent = status === "analyzing"
-    ? "Обычно это занимает несколько секунд."
-    : "Нажмите кнопку, чтобы получить краткое объяснение, слабые места и чеклист.";
+  text.textContent = status === "analyzing" ? copy.analyzingText : copy.emptyText;
   empty.append(title, text);
 
   return empty;
@@ -450,45 +453,49 @@ function createAnalysisErrorState(message: string): HTMLElement {
   return error;
 }
 
-function getAnalysisSummaryText(state: AnalysisState): string {
+function getAnalysisSummaryText(state: AnalysisState, mode: LearningMode = DEFAULT_LEARNING_MODE): string {
   switch (state.status) {
     case "analyzing":
-      return "Анализирую текущий шаг и видимые комментарии.";
+      return getAnalysisModeCopy(mode).analyzingSummary;
     case "ready":
-      return getReadyAnalysisSummaryText(state.analysis.source);
+      return getReadyAnalysisSummaryText(state.analysis.source, state.analysis.mode);
     case "error":
       return "Запрос не завершился. Можно попробовать еще раз.";
     case "idle":
-      return "Получите подсказки без готового ответа на задание.";
+      return getAnalysisModeCopy(mode).idleSummary;
   }
 }
 
-function getReadyAnalysisSummaryText(source: LearningAnalysis["source"]): string {
+function getReadyAnalysisSummaryText(source: LearningAnalysis["source"], mode: LearningMode): string {
+  const readyText = getAnalysisModeCopy(mode).readySummary;
+
   if (source === "ollama") {
-    return "Ответ готов. Данные обработаны локальной моделью.";
+    return `${readyText} Данные обработаны локальной моделью.`;
   }
 
   if (source === "openai") {
-    return "Ответ готов. Ключи остаются на сервере.";
+    return `${readyText} Ключи остаются на сервере.`;
   }
 
   if (source === "groq") {
-    return "Ответ готов. Ключи остаются на сервере.";
+    return `${readyText} Ключи остаются на сервере.`;
   }
 
-  return "Preview ответа готов.";
+  return `${readyText} Preview готов.`;
 }
 
-function getGenerateAnalysisButtonLabel(state: AnalysisState): string {
+function getGenerateAnalysisButtonLabel(state: AnalysisState, mode: LearningMode = DEFAULT_LEARNING_MODE): string {
+  const copy = getAnalysisModeCopy(mode);
+
   switch (state.status) {
     case "analyzing":
-      return "Анализирую";
+      return copy.analyzingButton;
     case "ready":
-      return "Обновить ответ";
+      return copy.refreshButton;
     case "error":
-      return "Повторить запрос";
+      return copy.retryButton;
     case "idle":
-      return "Получить подсказки";
+      return copy.generateButton;
   }
 }
 
@@ -501,13 +508,14 @@ function getAnalysisErrorMessage(error: unknown): string {
 }
 
 function createAnalysisResult(analysis: LearningAnalysis): HTMLElement {
+  const copy = getAnalysisModeCopy(analysis.mode);
   const result = createElement("div", "sc-analysis-result");
   result.append(
-    createAnalysisSummary(analysis),
-    createAnalysisList("На что обратить внимание", analysis.focusPoints),
-    createAnalysisList("Что путает других", analysis.commentInsights),
-    createAnalysisList("Проверь себя", analysis.selfCheck),
-    createAnalysisNote("Нужен ли контекст", analysis.needsMoreContext),
+    createAnalysisSummary(analysis, copy.summaryTitle),
+    createAnalysisList(copy.focusTitle, analysis.focusPoints),
+    createAnalysisList(copy.commentsTitle, analysis.commentInsights),
+    createAnalysisList(copy.selfCheckTitle, analysis.selfCheck),
+    createAnalysisNote(copy.contextTitle, analysis.needsMoreContext),
   );
 
   if (analysis.warnings.length > 0) {
@@ -579,15 +587,95 @@ function getFeedbackHint(feedback: FeedbackState): string {
   return "Помогите понять, насколько ответ был полезен.";
 }
 
-function createAnalysisSummary(analysis: LearningAnalysis): HTMLElement {
+function createAnalysisSummary(analysis: LearningAnalysis, titleText = "О чем шаг"): HTMLElement {
   const section = createElement("div", "sc-analysis-block is-summary");
   const title = createElement("div", "sc-analysis-block-title");
-  title.textContent = "О чем шаг";
+  title.textContent = titleText;
   const text = createElement("p", "sc-analysis-text");
   text.textContent = analysis.summary;
   section.append(title, text);
 
   return section;
+}
+
+type AnalysisModeCopy = {
+  idleSummary: string;
+  analyzingSummary: string;
+  readySummary: string;
+  emptyTitle: string;
+  emptyText: string;
+  analyzingTitle: string;
+  analyzingText: string;
+  generateButton: string;
+  analyzingButton: string;
+  refreshButton: string;
+  retryButton: string;
+  summaryTitle: string;
+  focusTitle: string;
+  commentsTitle: string;
+  selfCheckTitle: string;
+  contextTitle: string;
+};
+
+const ANALYSIS_MODE_COPY: Record<LearningMode, AnalysisModeCopy> = {
+  explain: {
+    idleSummary: "Получите объяснение идей шага без готового ответа.",
+    analyzingSummary: "Готовлю объяснение по текущему шагу и видимым комментариям.",
+    readySummary: "Объяснение готово.",
+    emptyTitle: "Готов к объяснению",
+    emptyText: "Нажмите кнопку, чтобы разобрать смысл шага, ключевые идеи и типичные ошибки.",
+    analyzingTitle: "Готовлю объяснение",
+    analyzingText: "Разбираю проверяемые идеи и места, где обычно путаются.",
+    generateButton: "Получить объяснение",
+    analyzingButton: "Объясняю",
+    refreshButton: "Обновить объяснение",
+    retryButton: "Повторить объяснение",
+    summaryTitle: "Объяснение",
+    focusTitle: "Ключевые идеи",
+    commentsTitle: "Что обычно путают",
+    selfCheckTitle: "Проверить понимание",
+    contextTitle: "Контекст для объяснения",
+  },
+  hint: {
+    idleSummary: "Получите подсказку без готового ответа на задание.",
+    analyzingSummary: "Готовлю подсказку по текущему шагу и видимым комментариям.",
+    readySummary: "Подсказка готова.",
+    emptyTitle: "Готов к подсказке",
+    emptyText: "Нажмите кнопку, чтобы получить направление, ограничения и проверку рассуждения.",
+    analyzingTitle: "Готовлю подсказку",
+    analyzingText: "Ищу безопасные вопросы и следующий шаг без спойлера.",
+    generateButton: "Получить подсказку",
+    analyzingButton: "Подсказываю",
+    refreshButton: "Обновить подсказку",
+    retryButton: "Повторить подсказку",
+    summaryTitle: "Подсказка",
+    focusTitle: "Куда смотреть",
+    commentsTitle: "Ловушки",
+    selfCheckTitle: "Проверка рассуждения",
+    contextTitle: "Контекст для подсказки",
+  },
+  notes: {
+    idleSummary: "Соберите конспект по текущему шагу и доступному контексту.",
+    analyzingSummary: "Собираю конспект по текущему шагу и видимым комментариям.",
+    readySummary: "Конспект готов.",
+    emptyTitle: "Готов к конспекту",
+    emptyText: "Нажмите кнопку, чтобы сохранить термины, правила и предупреждения для повторения.",
+    analyzingTitle: "Собираю конспект",
+    analyzingText: "Выделяю заметки, ограничения и частые ошибки.",
+    generateButton: "Собрать конспект",
+    analyzingButton: "Собираю",
+    refreshButton: "Обновить конспект",
+    retryButton: "Повторить конспект",
+    summaryTitle: "Конспект",
+    focusTitle: "Сохранить в заметки",
+    commentsTitle: "Частые ошибки",
+    selfCheckTitle: "Повторить",
+    contextTitle: "Контекст для конспекта",
+  },
+};
+
+function getAnalysisModeCopy(mode: LearningMode): AnalysisModeCopy {
+  return ANALYSIS_MODE_COPY[mode];
 }
 
 function createAnalysisList(titleText: string, items: string[], variant: "default" | "warning" = "default"): HTMLElement {

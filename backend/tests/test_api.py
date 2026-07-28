@@ -120,7 +120,7 @@ def test_analyze_step_handles_empty_comments() -> None:
 
     assert response.status_code == 200
     assert response.json()["commentInsights"] == [
-        "Видимых комментариев нет, поэтому backend mock не делает выводов по обсуждению."
+        "Комментариев нет: подсказка строится без ловушек из обсуждения."
     ]
 
 
@@ -180,6 +180,19 @@ def test_rejects_too_long_comment() -> None:
     payload = response.json()
     assert payload["error"]["code"] == "payload_too_large"
     assert "comments[0] is too large" in payload["error"]["message"]
+    assert payload["error"]["requestId"] == response.headers["X-Request-Id"]
+
+
+def test_rejects_too_large_total_request_text() -> None:
+    request = make_learning_request(comments=["x" * 1200 for _ in range(20)])
+    request["input"]["currentStep"]["markdown"] = "c" * 12000
+
+    response = asyncio.run(make_request("POST", "/analyze-step", json=request))
+
+    assert response.status_code == 413
+    payload = response.json()
+    assert payload["error"]["code"] == "payload_too_large"
+    assert "request text is too large" in payload["error"]["message"]
     assert payload["error"]["requestId"] == response.headers["X-Request-Id"]
 
 
@@ -381,9 +394,10 @@ def test_groq_provider_posts_chat_completion_request_and_parses_structured_outpu
     assert captured["json"]["model"] == "openai/gpt-oss-120b"
     assert captured["json"]["messages"][0]["role"] == "system"
     assert "learning-request-v1" in captured["json"]["messages"][1]["content"]
-    assert "КОНТРАКТ РЕЖИМА HINT" in captured["json"]["messages"][1]["content"]
+    assert "СЦЕНАРИЙ HINT" in captured["json"]["messages"][1]["content"]
     assert captured["json"]["response_format"]["type"] == "json_schema"
     assert captured["json"]["response_format"]["json_schema"]["strict"] is True
+    assert "Вопросы, проверки и ограничения" in captured["json"]["response_format"]["json_schema"]["schema"]["properties"]["focusPoints"]["description"]
 
 
 def test_provider_user_prompt_contains_distinct_mode_contracts() -> None:
@@ -398,16 +412,59 @@ def test_provider_user_prompt_contains_distinct_mode_contracts() -> None:
     hint_prompt = build_user_prompt(hint_request)
     notes_prompt = build_user_prompt(notes_request)
 
-    assert "АКТИВНЫЙ РЕЖИМ: explain" in explain_prompt
-    assert "КОНТРАКТ РЕЖИМА EXPLAIN" in explain_prompt
-    assert "понятия, причины, предпосылки" in explain_prompt
-    assert "АКТИВНЫЙ РЕЖИМ: hint" in hint_prompt
-    assert "КОНТРАКТ РЕЖИМА HINT" in hint_prompt
-    assert "вопросы, проверки и ограничения" in hint_prompt
-    assert "АКТИВНЫЙ РЕЖИМ: notes" in notes_prompt
-    assert "КОНТРАКТ РЕЖИМА NOTES" in notes_prompt
+    assert "АКТИВНЫЙ СЦЕНАРИЙ: explain" in explain_prompt
+    assert "СЦЕНАРИЙ EXPLAIN" in explain_prompt
+    assert "цельное объяснение смысла шага" in explain_prompt
+    assert "СЦЕНАРИЙ HINT" not in explain_prompt
+    assert "СЦЕНАРИЙ NOTES" not in explain_prompt
+    assert "АКТИВНЫЙ СЦЕНАРИЙ: hint" in hint_prompt
+    assert "СЦЕНАРИЙ HINT" in hint_prompt
+    assert "вопросы, проверки, ограничения" in hint_prompt
+    assert "СЦЕНАРИЙ EXPLAIN" not in hint_prompt
+    assert "СЦЕНАРИЙ NOTES" not in hint_prompt
+    assert "АКТИВНЫЙ СЦЕНАРИЙ: notes" in notes_prompt
+    assert "СЦЕНАРИЙ NOTES" in notes_prompt
     assert "конспектные пункты" in notes_prompt
+    assert "СЦЕНАРИЙ EXPLAIN" not in notes_prompt
+    assert "СЦЕНАРИЙ HINT" not in notes_prompt
     assert len({explain_prompt, hint_prompt, notes_prompt}) == 3
+
+
+def test_learning_analysis_schema_uses_mode_specific_descriptions() -> None:
+    from app.providers import learning_analysis_schema
+
+    explain_schema = learning_analysis_schema("explain")
+    hint_schema = learning_analysis_schema("hint")
+    notes_schema = learning_analysis_schema("notes")
+
+    assert explain_schema["required"] == hint_schema["required"] == notes_schema["required"]
+    assert explain_schema["properties"].keys() == hint_schema["properties"].keys() == notes_schema["properties"].keys()
+    assert explain_schema["properties"]["summary"]["type"] == "string"
+    assert hint_schema["properties"]["focusPoints"]["type"] == "array"
+    assert "Цельное объяснение" in explain_schema["properties"]["summary"]["description"]
+    assert "Вопросы, проверки и ограничения" in hint_schema["properties"]["focusPoints"]["description"]
+    assert "Компактные конспектные пункты" in notes_schema["properties"]["focusPoints"]["description"]
+    assert len({
+        explain_schema["properties"]["summary"]["description"],
+        hint_schema["properties"]["summary"]["description"],
+        notes_schema["properties"]["summary"]["description"],
+    }) == 3
+
+
+def test_backend_mock_responses_are_mode_specific() -> None:
+    from app import main as main_module
+    from app.analysis import build_mock_learning_analysis
+
+    explain = build_mock_learning_analysis(main_module.LearningRequest.model_validate(make_learning_request(mode="explain")))
+    hint = build_mock_learning_analysis(main_module.LearningRequest.model_validate(make_learning_request(mode="hint")))
+    notes = build_mock_learning_analysis(main_module.LearningRequest.model_validate(make_learning_request(mode="notes")))
+
+    assert "Объяснение" in explain.summary
+    assert "идею проверяет шаг" in " ".join(explain.focusPoints)
+    assert "следующий безопасный шаг" in hint.summary
+    assert any(point.endswith("?") for point in hint.focusPoints)
+    assert "Конспект" in notes.summary
+    assert "Термины:" in " ".join(notes.focusPoints)
 
 
 def test_groq_provider_retries_temporary_errors(monkeypatch) -> None:

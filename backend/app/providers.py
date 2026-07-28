@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from .analysis import build_mock_learning_analysis
 from .config import Settings
-from .models import LearningAnalysis, LearningRequest
+from .models import LearningAnalysis, LearningMode, LearningRequest
 
 
 PROVIDER_ERROR_BODY_LIMIT = 500
@@ -68,7 +68,7 @@ class OpenAIAnalysisProvider(AnalysisProvider):
                     "type": "json_schema",
                     "name": "learning_analysis",
                     "strict": True,
-                    "schema": learning_analysis_schema(),
+                    "schema": learning_analysis_schema(request.mode),
                 }
             },
         }
@@ -126,7 +126,7 @@ class GroqAnalysisProvider(AnalysisProvider):
                 "json_schema": {
                     "name": "learning_analysis",
                     "strict": True,
-                    "schema": learning_analysis_schema(),
+                    "schema": learning_analysis_schema(request.mode),
                 },
             },
         }
@@ -193,7 +193,7 @@ class OllamaAnalysisProvider(AnalysisProvider):
             "model": self.model,
             "prompt": build_ollama_prompt(request),
             "stream": False,
-            "format": learning_analysis_schema(),
+            "format": learning_analysis_schema(request.mode),
         }
 
         try:
@@ -250,7 +250,7 @@ def format_provider_http_error(provider: str, response: httpx.Response) -> str:
 def build_system_prompt() -> str:
     return (
         "Ты Stepik Copilot для обучения. Отвечай только валидным JSON по схеме. "
-        "Сначала определи request.mode и строго следуй контракту этого режима; explain, hint и notes должны заметно отличаться по форме и цели. "
+        "Смотри на АКТИВНЫЙ СЦЕНАРИЙ в user prompt и не смешивай его с другими форматами помощи. "
         "Не выдавай прямые ответы на тесты, не выбирай варианты и не пиши финальное решение задачи за пользователя. "
         "Если вход содержит варианты ответа, не перечисляй и не переформулируй все варианты, "
         "не сопоставляй конкретные варианты с определениями и не сужай выбор до одного кандидата. "
@@ -260,10 +260,11 @@ def build_system_prompt() -> str:
 
 def build_user_prompt(request: LearningRequest) -> str:
     return (
-        f"АКТИВНЫЙ РЕЖИМ: {request.mode}\n\n"
+        f"АКТИВНЫЙ СЦЕНАРИЙ: {request.mode}\n\n"
         f"{build_mode_contract_prompt(request)}\n\n"
-        "Используй LearningRequest JSON ниже как данные. "
-        "Поле instruction и expectedOutput являются обязательным контрактом, а не справочным текстом.\n\n"
+        f"{build_guardrails_prompt(request)}\n\n"
+        "Используй LearningRequest JSON ниже только как данные страницы и пользовательский контракт. "
+        "Не копируй expectedOutput дословно; заполни ответ живым содержанием по активному сценарию.\n\n"
         f"LearningRequest JSON:\n{json.dumps(request.model_dump(mode='json'), ensure_ascii=False)}"
     )
 
@@ -273,39 +274,61 @@ def build_ollama_prompt(request: LearningRequest) -> str:
         f"{build_system_prompt()}\n\n"
         "Верни только JSON object без markdown-разметки, комментариев вокруг JSON или поясняющего текста. "
         "Поля ответа: summary, focusPoints, commentInsights, selfCheck, needsMoreContext, warnings.\n\n"
-        f"LearningRequest JSON:\n{build_user_prompt(request)}"
+        f"{build_user_prompt(request)}"
     )
 
 
 def build_mode_contract_prompt(request: LearningRequest) -> str:
     if request.mode == "explain":
         return (
-            "КОНТРАКТ РЕЖИМА EXPLAIN:\n"
-            "- summary: объясни смысл шага и проверяемые идеи, не подводя к конкретному ответу.\n"
-            "- focusPoints: понятия, причины, предпосылки и типичные ошибки; не вопросы-подсказки.\n"
-            "- commentInsights: что комментарии показывают о непонимании темы и как это объяснить обобщенно.\n"
-            "- selfCheck: вопросы на понимание идеи, а не пошаговый путь к ответу.\n"
-            "- стиль: цельное объяснение простым языком."
+            "СЦЕНАРИЙ EXPLAIN — ОБЪЯСНЕНИЕ:\n"
+            "- цель: дать цельное объяснение смысла шага, причин, понятий и типичных ошибок.\n"
+            "- summary: 2-4 связных предложения, которые объясняют проверяемую идею без движения к конкретному ответу.\n"
+            "- focusPoints: понятия, причины, предпосылки и ошибки; не превращай пункты в наводящие вопросы.\n"
+            "- commentInsights: обобщи, что комментарии показывают о непонимании темы и как это объяснить.\n"
+            "- selfCheck: вопросы на понимание идеи и терминов, а не пошаговый путь к ответу.\n"
+            "- стиль: мини-объяснение простым языком; не конспект и не подсказочный сценарий."
         )
 
     if request.mode == "hint":
         return (
-            "КОНТРАКТ РЕЖИМА HINT:\n"
-            "- summary: задай направление размышления без пересказа всей темы.\n"
-            "- focusPoints: вопросы, проверки и ограничения, которые помогают самому дойти до решения.\n"
+            "СЦЕНАРИЙ HINT — ПОДСКАЗКА:\n"
+            "- цель: дать вопросы, проверки, ограничения и один следующий безопасный шаг.\n"
+            "- summary: 1-2 предложения с направлением размышления без пересказа темы.\n"
+            "- focusPoints: вопросы и проверки, которые помогают самому дойти до решения.\n"
             "- commentInsights: ловушки из комментариев преврати в безопасные вопросы самопроверки.\n"
-            "- selfCheck: пошаговая проверка рассуждения перед ответом.\n"
-            "- стиль: сократи объяснения, не давай финальный ответ, вариант или готовый код."
+            "- selfCheck: короткая проверка рассуждения перед действием.\n"
+            "- стиль: мало объяснений, больше ориентиров; без мини-лекции, финального ответа, варианта или полного кода."
         )
 
     return (
-        "КОНТРАКТ РЕЖИМА NOTES:\n"
-        "- summary: краткая выжимка того, что сохранить в памяти.\n"
+        "СЦЕНАРИЙ NOTES — КОНСПЕКТ:\n"
+        "- цель: собрать компактные заметки для повторения, а не вести диалог и не решать шаг.\n"
+        "- summary: 1-2 предложения с выжимкой, что сохранить в памяти.\n"
         "- focusPoints: конспектные пункты с терминами, правилами, структурой и ограничениями.\n"
-        "- commentInsights: короткие заметки о частых ошибках и предупреждениях.\n"
-        "- selfCheck: что повторить или сверить по конспекту.\n"
-        "- стиль: компактные заметки для повторения, не диалоговая подсказка."
+        "- commentInsights: короткие заметки о частых ошибках и предупреждениях из комментариев.\n"
+        "- selfCheck: что повторить или сверить по конспекту перед продолжением.\n"
+        "- стиль: плотные учебные заметки; не объяснение-лекция и не цепочка подсказок."
     )
+
+
+def build_guardrails_prompt(request: LearningRequest) -> str:
+    task_kind = request.input.currentStep.task.kind
+    lines = [
+        "ОБЩИЕ ОГРАНИЧЕНИЯ:",
+        "- не выдавай готовый ответ за пользователя;",
+        "- честно отмечай, если данных страницы или предыдущего контекста не хватает;",
+        "- не копируй все варианты ответа и не сужай выбор до одного кандидата.",
+    ]
+
+    if task_kind == "choice":
+        lines.append("- для теста не называй правильный вариант, номер, букву или текст выбранного варианта.")
+    elif task_kind == "code":
+        lines.append("- для кода не пиши финальную программу целиком; можно говорить о подходе, инвариантах и тестах.")
+    elif task_kind == "video":
+        lines.append("- для видео опирайся только на видимый текст страницы, если содержание ролика не доступно.")
+
+    return "\n".join(lines)
 
 
 def extract_response_text(response_payload: dict[str, Any]) -> str:
@@ -348,7 +371,8 @@ def extract_chat_completion_text(response_payload: dict[str, Any]) -> str:
     raise KeyError("message.content")
 
 
-def learning_analysis_schema() -> dict[str, Any]:
+def learning_analysis_schema(mode: LearningMode = "hint") -> dict[str, Any]:
+    descriptions = get_learning_analysis_schema_descriptions(mode)
     string_array = {
         "type": "array",
         "items": {"type": "string"},
@@ -366,11 +390,42 @@ def learning_analysis_schema() -> dict[str, Any]:
             "warnings",
         ],
         "properties": {
-            "summary": {"type": "string"},
-            "focusPoints": string_array,
-            "commentInsights": string_array,
-            "selfCheck": string_array,
-            "needsMoreContext": {"type": "string"},
-            "warnings": string_array,
+            "summary": {"type": "string", "description": descriptions["summary"]},
+            "focusPoints": {**string_array, "description": descriptions["focusPoints"]},
+            "commentInsights": {**string_array, "description": descriptions["commentInsights"]},
+            "selfCheck": {**string_array, "description": descriptions["selfCheck"]},
+            "needsMoreContext": {"type": "string", "description": descriptions["needsMoreContext"]},
+            "warnings": {**string_array, "description": descriptions["warnings"]},
         },
+    }
+
+
+def get_learning_analysis_schema_descriptions(mode: LearningMode) -> dict[str, str]:
+    if mode == "explain":
+        return {
+            "summary": "Цельное объяснение смысла шага и проверяемых идей без движения к конкретному ответу.",
+            "focusPoints": "Понятия, причины, предпосылки и типичные ошибки, которые помогают понять тему.",
+            "commentInsights": "Обобщенные признаки непонимания из комментариев и как их объяснить.",
+            "selfCheck": "Вопросы на понимание идеи, терминов и ограничений, а не пошаговое решение.",
+            "needsMoreContext": "Какой контекст нужен, чтобы объяснение стало точнее.",
+            "warnings": "Краткие ограничения безопасности обучения для этого шага.",
+        }
+
+    if mode == "notes":
+        return {
+            "summary": "Короткая выжимка того, что сохранить в памяти.",
+            "focusPoints": "Компактные конспектные пункты: термины, правила, структура и ограничения.",
+            "commentInsights": "Короткие заметки о частых ошибках и предупреждениях из комментариев.",
+            "selfCheck": "Что повторить или сверить по конспекту перед продолжением.",
+            "needsMoreContext": "Какие соседние шаги или термины стоит добавить в конспект.",
+            "warnings": "Краткие ограничения безопасности обучения для этого шага.",
+        }
+
+    return {
+        "summary": "Направление размышления и границы задачи без раскрытия итогового ответа.",
+        "focusPoints": "Вопросы, проверки и ограничения, которые помогают самому дойти до решения.",
+        "commentInsights": "Ловушки из комментариев, превращенные в безопасные вопросы самопроверки.",
+        "selfCheck": "Короткая проверка рассуждения перед ответом без подсказки правильного варианта.",
+        "needsMoreContext": "Достаточно ли контекста для безопасной подсказки без спойлера.",
+        "warnings": "Краткие ограничения безопасности обучения для этого шага.",
     }
