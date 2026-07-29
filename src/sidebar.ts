@@ -2,6 +2,7 @@ import type { ContextPack } from "./contextPack";
 import { AnalysisClientError, requestLearningAnalysis } from "./analysisClient";
 import type { LearningAnalysis } from "./learningAnalysis";
 import {
+  clearLearningFeedbackLog,
   createLearningFeedbackRecord,
   saveLearningFeedback,
   type LearningFeedbackReason,
@@ -45,6 +46,10 @@ type FeedbackState = {
   selectedReason?: LearningFeedbackReason;
 };
 
+type FeedbackHistoryState = {
+  status: "idle" | "clearing" | "cleared" | "error";
+};
+
 const HOST_ID = "stepik-copilot-root";
 
 export function createSidebar(options: SidebarOptions): SidebarController {
@@ -65,11 +70,13 @@ export function createSidebar(options: SidebarOptions): SidebarController {
   let state: SidebarState = { status: "idle" };
   let learningMode: LearningMode = DEFAULT_LEARNING_MODE;
   let analysisState: AnalysisState = { status: "idle" };
+  let feedbackHistoryState: FeedbackHistoryState = { status: "idle" };
   let analysisRequestId = 0;
 
   function setState(nextState: SidebarState): void {
     state = nextState;
     analysisState = { status: "idle" };
+    feedbackHistoryState = { status: "idle" };
     analysisRequestId += 1;
     render();
   }
@@ -146,7 +153,22 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     refreshButton.disabled = state.status === "collecting";
     refreshButton.append(createIcon("refresh"), document.createTextNode("Обновить данные"));
     refreshButton.addEventListener("click", options.onRefresh);
-    actions.append(refreshButton);
+
+    const clearFeedbackButton = createElement("button", "sc-clear-feedback") as HTMLButtonElement;
+    clearFeedbackButton.type = "button";
+    clearFeedbackButton.disabled = feedbackHistoryState.status === "clearing";
+    clearFeedbackButton.append(createIcon("trash"), document.createTextNode("Очистить историю оценок"));
+    clearFeedbackButton.addEventListener("click", () => {
+      void clearFeedbackHistory();
+    });
+
+    actions.append(refreshButton, clearFeedbackButton);
+
+    if (feedbackHistoryState.status !== "idle") {
+      const feedbackHistoryStatus = createElement("div", `sc-action-status is-${feedbackHistoryState.status}`);
+      feedbackHistoryStatus.textContent = getFeedbackHistoryStatusText(feedbackHistoryState);
+      actions.append(feedbackHistoryStatus);
+    }
 
     const footer = createElement("footer", "sc-footer");
     const version = createElement("span");
@@ -228,6 +250,20 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     learningMode = nextMode;
     analysisState = { status: "idle" };
     analysisRequestId += 1;
+    render();
+  }
+
+  async function clearFeedbackHistory(): Promise<void> {
+    feedbackHistoryState = { status: "clearing" };
+    render();
+
+    try {
+      await clearLearningFeedbackLog();
+      feedbackHistoryState = { status: "cleared" };
+    } catch {
+      feedbackHistoryState = { status: "error" };
+    }
+
     render();
   }
 
@@ -347,7 +383,7 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState, learningMode)));
     generateButton.addEventListener("click", () => generateLearningAnalysis(request));
 
-    wrapper.append(header, createLearningModeSwitcher(), generateButton);
+    wrapper.append(header, createLearningModeSwitcher(), createRequestDisclosure(request), generateButton);
 
     if (analysisState.status === "ready") {
       wrapper.append(
@@ -451,6 +487,21 @@ function createAnalysisErrorState(message: string): HTMLElement {
   error.append(title, text);
 
   return error;
+}
+
+function createRequestDisclosure(request: LearningRequest): HTMLElement {
+  const disclosure = createElement("div", "sc-request-disclosure");
+  const label = createElement("div", "sc-request-disclosure-label");
+  label.textContent = "Перед отправкой";
+  const text = createElement("p", "sc-request-disclosure-text");
+  text.textContent = [
+    "На анализ уйдут: текст текущего шага",
+    formatCommentsForDisclosure(request.input.comments.length),
+    formatPreviousStepsForDisclosure(request.input.previousSteps.length),
+  ].join(", ") + ".";
+  disclosure.append(label, text);
+
+  return disclosure;
 }
 
 function getAnalysisSummaryText(state: AnalysisState, mode: LearningMode = DEFAULT_LEARNING_MODE): string {
@@ -585,6 +636,22 @@ function getFeedbackHint(feedback: FeedbackState): string {
   }
 
   return "Помогите понять, насколько ответ был полезен.";
+}
+
+function getFeedbackHistoryStatusText(state: FeedbackHistoryState): string {
+  if (state.status === "clearing") {
+    return "Очищаю историю оценок.";
+  }
+
+  if (state.status === "cleared") {
+    return "История оценок очищена.";
+  }
+
+  if (state.status === "error") {
+    return "Не удалось очистить историю оценок.";
+  }
+
+  return "";
 }
 
 function createAnalysisSummary(analysis: LearningAnalysis, titleText = "О чем шаг"): HTMLElement {
@@ -816,6 +883,22 @@ function formatPreviousSteps(count: number): string {
   return `${count} ${pluralizeRu(count, "предыдущий шаг", "предыдущих шага", "предыдущих шагов")}`;
 }
 
+function formatPreviousStepsForDisclosure(count: number): string {
+  if (count === 0) {
+    return "без предыдущих шагов";
+  }
+
+  return `${formatPreviousSteps(count)} из локального контекста`;
+}
+
+function formatCommentsForDisclosure(count: number): string {
+  if (count === 0) {
+    return "без комментариев";
+  }
+
+  return `${count} ${pluralizeRu(count, "видимый комментарий", "видимых комментария", "видимых комментариев")}`;
+}
+
 function pluralizeRu(count: number, one: string, few: string, many: string): string {
   const absCount = Math.abs(count);
   const lastTwoDigits = absCount % 100;
@@ -899,7 +982,7 @@ function createElement(tagName: string, className?: string): HTMLElement {
   return element;
 }
 
-function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "sparkle" | "spinner" | "warning"): SVGElement {
+function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "sparkle" | "spinner" | "trash" | "warning"): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -912,6 +995,7 @@ function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "spar
     refresh: ["M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"],
     sparkle: ["M12 3l1.7 5.1L19 10l-5.3 1.9L12 17l-1.7-5.1L5 10l5.3-1.9L12 3Z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"],
     spinner: ["M21 12a9 9 0 0 1-9 9"],
+    trash: ["M3 6h18", "M8 6V4h8v2", "M6 6l1 15h10l1-15", "M10 11v6", "M14 11v6"],
     warning: ["M12 8v5", "M12 17h.01", "M10.3 4.6 2.7 18a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"],
   };
 
@@ -1385,6 +1469,32 @@ const SIDEBAR_CSS = `
     color: var(--sc-error);
   }
 
+  .sc-request-disclosure {
+    display: grid;
+    gap: 4px;
+    margin: 0 0 10px;
+    padding: 10px 11px;
+    background: #fbfdfc;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+  }
+
+  .sc-request-disclosure-label {
+    color: var(--sc-green-dark);
+    font-size: 11px;
+    font-weight: 780;
+    line-height: 1.25;
+  }
+
+  .sc-request-disclosure-text {
+    margin: 0;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 520;
+    line-height: 1.42;
+    overflow-wrap: anywhere;
+  }
+
   .sc-analysis-empty-title {
     margin: 0 0 4px;
     color: var(--sc-text);
@@ -1658,6 +1768,56 @@ const SIDEBAR_CSS = `
     opacity: 0.72;
   }
 
+  .sc-clear-feedback {
+    width: 100%;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 14px;
+    color: var(--sc-muted);
+    background: #ffffff;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 720;
+    line-height: 1.2;
+    letter-spacing: 0;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  }
+
+  .sc-clear-feedback:hover:not(:disabled) {
+    color: var(--sc-text);
+    background: var(--sc-soft);
+    border-color: var(--sc-border-strong);
+    transform: translateY(-1px);
+  }
+
+  .sc-clear-feedback:disabled {
+    cursor: wait;
+    opacity: 0.72;
+  }
+
+  .sc-action-status {
+    margin-top: -2px;
+    color: var(--sc-muted);
+    font-size: 12px;
+    font-weight: 560;
+    line-height: 1.35;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-action-status.is-cleared {
+    color: var(--sc-green-dark);
+  }
+
+  .sc-action-status.is-error {
+    color: var(--sc-error);
+  }
+
   .sc-footer {
     display: flex;
     align-items: center;
@@ -1711,6 +1871,7 @@ const SIDEBAR_CSS = `
     .sc-trigger,
     .sc-drawer,
     .sc-generate-analysis,
+    .sc-clear-feedback,
     .sc-refresh {
       transition: none;
     }

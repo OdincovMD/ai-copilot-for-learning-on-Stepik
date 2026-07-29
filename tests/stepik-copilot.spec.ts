@@ -17,6 +17,7 @@ import {
   type LearningRequest,
 } from "../src/learningRequest";
 import {
+  clearLearningFeedbackLog,
   LEARNING_FEEDBACK_STORAGE_KEY,
   readLearningFeedbackLog,
   saveLearningFeedback,
@@ -493,6 +494,39 @@ test("stores only the latest fifty learning feedback records", async () => {
     expect(log[0].id).toBe("feedback-54");
     expect(log[49].id).toBe("feedback-5");
     expect(JSON.parse(storedValues.get(LEARNING_FEEDBACK_STORAGE_KEY) ?? "[]")).toHaveLength(50);
+  } finally {
+    Object.defineProperty(globalThis, "localStorage", {
+      value: previousLocalStorage,
+      configurable: true,
+    });
+  }
+});
+
+test("clears local learning feedback records", async () => {
+  const storedValues = new Map<string, string>();
+  const previousLocalStorage = globalThis.localStorage;
+  const fakeLocalStorage = {
+    getItem: (key: string) => storedValues.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storedValues.set(key, value);
+    },
+  } as Storage;
+
+  Object.defineProperty(globalThis, "localStorage", {
+    value: fakeLocalStorage,
+    configurable: true,
+  });
+
+  try {
+    await saveLearningFeedback(createMockFeedbackRecord(1));
+    await saveLearningFeedback(createMockFeedbackRecord(2));
+
+    expect(await readLearningFeedbackLog()).toHaveLength(2);
+
+    await clearLearningFeedbackLog();
+
+    expect(await readLearningFeedbackLog()).toEqual([]);
+    expect(JSON.parse(storedValues.get(LEARNING_FEEDBACK_STORAGE_KEY) ?? "null")).toEqual([]);
   } finally {
     Object.defineProperty(globalThis, "localStorage", {
       value: previousLocalStorage,
@@ -987,6 +1021,8 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
   expect(sidebarText).toContain("Данные собраны");
   expect(sidebarText).toContain("Комментарии1видимых");
   expect(sidebarText).toContain("Получить подсказку");
+  expect(sidebarText).toContain("Перед отправкой");
+  expect(sidebarText).toContain("На анализ уйдут: текст текущего шага, 1 видимый комментарий, без предыдущих шагов.");
   expect(sidebarText).not.toContain("Комментарий для проверки сайдбара.");
 });
 
@@ -1054,6 +1090,7 @@ test("renders previous visited steps from the context pack in the sidebar", asyn
   expect(sidebarText).toContain("1 предыдущий шаг");
   expect(sidebarText).toContain("Шаг 1");
   expect(sidebarText).toContain("Первый шаг");
+  expect(sidebarText).toContain("На анализ уйдут: текст текущего шага, без комментариев, 1 предыдущий шаг из локального контекста.");
 });
 
 test("renders the help mode switcher in the sidebar", async ({ page }) => {
@@ -1328,6 +1365,26 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   }, LEARNING_FEEDBACK_STORAGE_KEY);
 
   expect(storedFeedback?.[0].feedbackReason).toBe("factual_error");
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-clear-feedback")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-actions")?.textContent ?? "";
+    });
+  }).toContain("История оценок очищена.");
+
+  await expect.poll(async () => {
+    return page.evaluate((storageKey) => {
+      const feedback = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{ feedbackReason: string }>;
+      return feedback?.length ?? 0;
+    }, LEARNING_FEEDBACK_STORAGE_KEY);
+  }).toBe(0);
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;

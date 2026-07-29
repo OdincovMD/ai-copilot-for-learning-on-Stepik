@@ -67,6 +67,10 @@ export async function saveLearningFeedback(recordInput: LearningFeedbackRecord):
   return nextLog;
 }
 
+export async function clearLearningFeedbackLog(): Promise<void> {
+  await writeLearningFeedbackLog([]);
+}
+
 export async function readLearningFeedbackLog(): Promise<LearningFeedbackRecord[]> {
   const extensionStorage = getExtensionStorage();
 
