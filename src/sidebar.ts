@@ -4,6 +4,7 @@ import type { LearningAnalysis } from "./learningAnalysis";
 import {
   clearLearningFeedbackLog,
   createLearningFeedbackRecord,
+  readLearningFeedbackLog,
   saveLearningFeedback,
   type LearningFeedbackReason,
 } from "./learningFeedback";
@@ -47,7 +48,8 @@ type FeedbackState = {
 };
 
 type FeedbackHistoryState = {
-  status: "idle" | "clearing" | "cleared" | "error";
+  status: "idle" | "clearing" | "cleared" | "copying" | "copied" | "empty" | "error";
+  recordsCount?: number;
 };
 
 const HOST_ID = "stepik-copilot-root";
@@ -154,15 +156,23 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     refreshButton.append(createIcon("refresh"), document.createTextNode("Обновить данные"));
     refreshButton.addEventListener("click", options.onRefresh);
 
+    const copyFeedbackButton = createElement("button", "sc-copy-feedback") as HTMLButtonElement;
+    copyFeedbackButton.type = "button";
+    copyFeedbackButton.disabled = feedbackHistoryState.status === "clearing" || feedbackHistoryState.status === "copying";
+    copyFeedbackButton.append(createIcon("copy"), document.createTextNode("Скопировать историю оценок"));
+    copyFeedbackButton.addEventListener("click", () => {
+      void copyFeedbackHistory();
+    });
+
     const clearFeedbackButton = createElement("button", "sc-clear-feedback") as HTMLButtonElement;
     clearFeedbackButton.type = "button";
-    clearFeedbackButton.disabled = feedbackHistoryState.status === "clearing";
+    clearFeedbackButton.disabled = feedbackHistoryState.status === "clearing" || feedbackHistoryState.status === "copying";
     clearFeedbackButton.append(createIcon("trash"), document.createTextNode("Очистить историю оценок"));
     clearFeedbackButton.addEventListener("click", () => {
       void clearFeedbackHistory();
     });
 
-    actions.append(refreshButton, clearFeedbackButton);
+    actions.append(refreshButton, copyFeedbackButton, clearFeedbackButton);
 
     if (feedbackHistoryState.status !== "idle") {
       const feedbackHistoryStatus = createElement("div", `sc-action-status is-${feedbackHistoryState.status}`);
@@ -260,6 +270,25 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     try {
       await clearLearningFeedbackLog();
       feedbackHistoryState = { status: "cleared" };
+    } catch {
+      feedbackHistoryState = { status: "error" };
+    }
+
+    render();
+  }
+
+  async function copyFeedbackHistory(): Promise<void> {
+    feedbackHistoryState = { status: "copying" };
+    render();
+
+    try {
+      const feedbackLog = await readLearningFeedbackLog();
+      if (feedbackLog.length === 0) {
+        feedbackHistoryState = { status: "empty" };
+      } else {
+        await copyTextToClipboard(JSON.stringify(feedbackLog, null, 2));
+        feedbackHistoryState = { status: "copied", recordsCount: feedbackLog.length };
+      }
     } catch {
       feedbackHistoryState = { status: "error" };
     }
@@ -643,6 +672,18 @@ function getFeedbackHistoryStatusText(state: FeedbackHistoryState): string {
     return "Очищаю историю оценок.";
   }
 
+  if (state.status === "copying") {
+    return "Копирую историю оценок.";
+  }
+
+  if (state.status === "copied") {
+    return `История оценок скопирована: ${formatFeedbackRecordsCount(state.recordsCount ?? 0)}.`;
+  }
+
+  if (state.status === "empty") {
+    return "История оценок пока пустая.";
+  }
+
   if (state.status === "cleared") {
     return "История оценок очищена.";
   }
@@ -652,6 +693,14 @@ function getFeedbackHistoryStatusText(state: FeedbackHistoryState): string {
   }
 
   return "";
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard API is unavailable");
+  }
+
+  await navigator.clipboard.writeText(text);
 }
 
 function createAnalysisSummary(analysis: LearningAnalysis, titleText = "О чем шаг"): HTMLElement {
@@ -883,6 +932,10 @@ function formatPreviousSteps(count: number): string {
   return `${count} ${pluralizeRu(count, "предыдущий шаг", "предыдущих шага", "предыдущих шагов")}`;
 }
 
+function formatFeedbackRecordsCount(count: number): string {
+  return `${count} ${pluralizeRu(count, "запись", "записи", "записей")}`;
+}
+
 function formatPreviousStepsForDisclosure(count: number): string {
   if (count === 0) {
     return "без предыдущих шагов";
@@ -982,7 +1035,7 @@ function createElement(tagName: string, className?: string): HTMLElement {
   return element;
 }
 
-function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "sparkle" | "spinner" | "trash" | "warning"): SVGElement {
+function createIcon(name: "check" | "chevron-left" | "close" | "copy" | "refresh" | "sparkle" | "spinner" | "trash" | "warning"): SVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -992,6 +1045,7 @@ function createIcon(name: "check" | "chevron-left" | "close" | "refresh" | "spar
     check: ["M20 6 9 17l-5-5"],
     "chevron-left": ["M15 18 9 12l6-6"],
     close: ["M18 6 6 18", "M6 6l12 12"],
+    copy: ["M8 8h10v12H8Z", "M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
     refresh: ["M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"],
     sparkle: ["M12 3l1.7 5.1L19 10l-5.3 1.9L12 17l-1.7-5.1L5 10l5.3-1.9L12 3Z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"],
     spinner: ["M21 12a9 9 0 0 1-9 9"],
@@ -1768,7 +1822,8 @@ const SIDEBAR_CSS = `
     opacity: 0.72;
   }
 
-  .sc-clear-feedback {
+  .sc-clear-feedback,
+  .sc-copy-feedback {
     width: 100%;
     min-height: 38px;
     display: inline-flex;
@@ -1788,14 +1843,16 @@ const SIDEBAR_CSS = `
     transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
   }
 
-  .sc-clear-feedback:hover:not(:disabled) {
+  .sc-clear-feedback:hover:not(:disabled),
+  .sc-copy-feedback:hover:not(:disabled) {
     color: var(--sc-text);
     background: var(--sc-soft);
     border-color: var(--sc-border-strong);
     transform: translateY(-1px);
   }
 
-  .sc-clear-feedback:disabled {
+  .sc-clear-feedback:disabled,
+  .sc-copy-feedback:disabled {
     cursor: wait;
     opacity: 0.72;
   }
@@ -1810,7 +1867,8 @@ const SIDEBAR_CSS = `
     overflow-wrap: anywhere;
   }
 
-  .sc-action-status.is-cleared {
+  .sc-action-status.is-cleared,
+  .sc-action-status.is-copied {
     color: var(--sc-green-dark);
   }
 
@@ -1872,6 +1930,7 @@ const SIDEBAR_CSS = `
     .sc-drawer,
     .sc-generate-analysis,
     .sc-clear-feedback,
+    .sc-copy-feedback,
     .sc-refresh {
       transition: none;
     }

@@ -82,7 +82,8 @@
 ### Storage
 
 - `PostgreSQL` для пользователей и истории
-- `localStorage` / `chrome.storage` для локальных настроек
+- `localStorage` / `chrome.storage` для локального context cache, feedback log
+  и настроек
 
 ## Data Flow
 

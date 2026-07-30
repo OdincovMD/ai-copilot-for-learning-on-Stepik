@@ -1308,6 +1308,14 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   expect(generatedText).toContain("Не понял контекст");
   expect(generatedText).toContain("Фактическая ошибка");
 
+  const actionsText = await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+    return shadow?.querySelector(".sc-actions")?.textContent ?? "";
+  });
+
+  expect(actionsText).toContain("Скопировать историю оценок");
+
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
     const feedbackButton = Array.from(shadow?.querySelectorAll<HTMLButtonElement>(".sc-feedback-button") ?? [])
@@ -1365,6 +1373,41 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   }, LEARNING_FEEDBACK_STORAGE_KEY);
 
   expect(storedFeedback?.[0].feedbackReason).toBe("factual_error");
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) => {
+          (window as typeof window & { __stepikCopilotFeedbackExport?: string }).__stepikCopilotFeedbackExport = text;
+        },
+      },
+      configurable: true,
+    });
+  });
+
+  await page.evaluate(() => {
+    const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>(".sc-copy-feedback")?.click();
+  });
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-actions")?.textContent ?? "";
+    });
+  }).toContain("История оценок скопирована: 1 запись.");
+
+  const exportedFeedback = await page.evaluate(() => {
+    const rawValue = (window as typeof window & { __stepikCopilotFeedbackExport?: string }).__stepikCopilotFeedbackExport ?? "[]";
+
+    return JSON.parse(rawValue) as Array<{ feedbackReason: string; request: LearningRequest; analysis: LearningAnalysis }>;
+  });
+
+  expect(exportedFeedback).toHaveLength(1);
+  expect(exportedFeedback[0].feedbackReason).toBe("factual_error");
+  expect(exportedFeedback[0].request.version).toBe("learning-request-v1");
+  expect(exportedFeedback[0].analysis.version).toBe("learning-analysis-v1");
 
   await page.evaluate(() => {
     const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
