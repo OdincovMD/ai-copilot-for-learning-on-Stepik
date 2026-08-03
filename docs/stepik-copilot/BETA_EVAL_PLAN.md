@@ -89,4 +89,3 @@
    - provider latency/quality;
    - UI clarity;
    - guardrails.
-7. Выбрать не больше трех fixes на следующую итерацию.
