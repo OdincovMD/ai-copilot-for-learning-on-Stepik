@@ -1021,6 +1021,8 @@ test("opens the sidebar and renders collected comments", async ({ page }) => {
   expect(sidebarText).toContain("Данные собраны");
   expect(sidebarText).toContain("Комментарии1видимых");
   expect(sidebarText).toContain("Получить подсказку");
+  expect(sidebarText).toContain("ИсточникBackend/API");
+  expect(sidebarText).toContain("В запрос уйдет только видимый DOM текущего шага.");
   expect(sidebarText).toContain("Перед отправкой");
   expect(sidebarText).toContain("На анализ уйдут: текст текущего шага, 1 видимый комментарий, без предыдущих шагов.");
   expect(sidebarText).not.toContain("Комментарий для проверки сайдбара.");
@@ -1090,6 +1092,7 @@ test("renders previous visited steps from the context pack in the sidebar", asyn
   expect(sidebarText).toContain("1 предыдущий шаг");
   expect(sidebarText).toContain("Шаг 1");
   expect(sidebarText).toContain("Первый шаг");
+  expect(sidebarText).toContain("В запрос войдет текущий шаг и посещенный контекст урока.");
   expect(sidebarText).toContain("На анализ уйдут: текст текущего шага, без комментариев, 1 предыдущий шаг из локального контекста.");
 });
 
@@ -1278,6 +1281,13 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
       return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
     });
   }).toContain("Подсказываю");
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const shadow = document.querySelector("#stepik-copilot-root")?.shadowRoot;
+
+      return shadow?.querySelector(".sc-analysis")?.textContent ?? "";
+    });
+  }).toContain("внешний LLM может отвечать десятки секунд");
 
   await expect.poll(async () => {
     return page.evaluate(() => {
@@ -1302,6 +1312,8 @@ test("renders backend Copilot answer and resets it when mode changes", async ({ 
   expect(generatedText).toContain("Ловушки");
   expect(generatedText).toContain("Проверка рассуждения");
   expect(generatedText).toContain("не выбирает вариант ответа");
+  expect(generatedText).toContain("ИсточникBackend mock");
+  expect(generatedText).toContain("Ответ пришел через backend");
   expect(generatedText).toContain("Оценить ответ");
   expect(generatedText).toContain("Полезно");
   expect(generatedText).toContain("Слишком прямой ответ");
@@ -1518,6 +1530,7 @@ test("renders backend analysis error without breaking the sidebar", async ({ pag
 
   expect(sidebarText).toContain("Слишком много данных для анализа");
   expect(sidebarText).toContain("req-playwright-413");
+  expect(sidebarText).toContain("Можно повторить запрос после проверки backend или настроек внешнего LLM.");
   expect(sidebarText).not.toContain("Материал шага для backend error.");
 });
 

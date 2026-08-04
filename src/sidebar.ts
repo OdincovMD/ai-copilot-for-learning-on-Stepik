@@ -412,7 +412,13 @@ export function createSidebar(options: SidebarOptions): SidebarController {
     generateButton.append(createIcon("sparkle"), document.createTextNode(getGenerateAnalysisButtonLabel(analysisState, learningMode)));
     generateButton.addEventListener("click", () => generateLearningAnalysis(request));
 
-    wrapper.append(header, createLearningModeSwitcher(), createRequestDisclosure(request), generateButton);
+    wrapper.append(
+      header,
+      createLearningModeSwitcher(),
+      createAnalysisRunMeta(payload, contextPack, request, analysisState),
+      createRequestDisclosure(request),
+      generateButton,
+    );
 
     if (analysisState.status === "ready") {
       wrapper.append(
@@ -531,6 +537,95 @@ function createRequestDisclosure(request: LearningRequest): HTMLElement {
   disclosure.append(label, text);
 
   return disclosure;
+}
+
+function createAnalysisRunMeta(
+  payload: StepPayload,
+  contextPack: ContextPack | undefined,
+  request: LearningRequest,
+  state: AnalysisState,
+): HTMLElement {
+  const meta = createElement("div", `sc-analysis-meta is-${state.status}`);
+
+  meta.append(
+    createAnalysisMetaItem("Режим", LEARNING_MODE_LABELS[request.mode]),
+    createAnalysisMetaItem("Источник", getAnalysisSourceLabel(state)),
+    createAnalysisMetaItem("Вход", formatAnalysisInputFootprint(request)),
+    createAnalysisMetaItem("Тип", getTaskKindLabel(payload.context.task.kind)),
+  );
+
+  const note = createElement("p", "sc-analysis-meta-note");
+  note.textContent = getAnalysisMetaNote(state, contextPack);
+  meta.append(note);
+
+  return meta;
+}
+
+function createAnalysisMetaItem(labelText: string, valueText: string): HTMLElement {
+  const item = createElement("div", "sc-analysis-meta-item");
+  const label = createElement("span", "sc-analysis-meta-label");
+  label.textContent = labelText;
+  const value = createElement("span", "sc-analysis-meta-value");
+  value.textContent = valueText;
+  item.append(label, value);
+
+  return item;
+}
+
+function getAnalysisSourceLabel(state: AnalysisState): string {
+  if (state.status === "ready") {
+    return formatAnalysisSource(state.analysis.source);
+  }
+
+  if (state.status === "analyzing") {
+    return "Backend";
+  }
+
+  if (state.status === "error") {
+    return "Ошибка";
+  }
+
+  return "Backend/API";
+}
+
+function getAnalysisMetaNote(state: AnalysisState, contextPack: ContextPack | undefined): string {
+  if (state.status === "analyzing") {
+    return "Запрос отправлен на backend; внешний LLM может отвечать десятки секунд.";
+  }
+
+  if (state.status === "ready") {
+    return "Ответ пришел через backend; секреты провайдера остаются вне расширения.";
+  }
+
+  if (state.status === "error") {
+    return "Можно повторить запрос после проверки backend или настроек внешнего LLM.";
+  }
+
+  if ((contextPack?.stats.includedPreviousSteps ?? 0) > 0) {
+    return "В запрос войдет текущий шаг и посещенный контекст урока.";
+  }
+
+  return "В запрос уйдет только видимый DOM текущего шага.";
+}
+
+function formatAnalysisInputFootprint(request: LearningRequest): string {
+  return [
+    `${formatCompactNumber(request.input.currentStep.markdown.length)} md`,
+    formatPreviousStepsShort(request.input.previousSteps.length),
+    formatCommentsShort(request.input.comments.length),
+  ].join(" · ");
+}
+
+function formatAnalysisSource(source: LearningAnalysis["source"]): string {
+  const labels: Record<LearningAnalysis["source"], string> = {
+    "backend-mock": "Backend mock",
+    "local-mock": "Local mock",
+    groq: "Groq",
+    ollama: "Ollama",
+    openai: "OpenAI",
+  };
+
+  return labels[source];
 }
 
 function getAnalysisSummaryText(state: AnalysisState, mode: LearningMode = DEFAULT_LEARNING_MODE): string {
@@ -944,12 +1039,28 @@ function formatPreviousStepsForDisclosure(count: number): string {
   return `${formatPreviousSteps(count)} из локального контекста`;
 }
 
+function formatPreviousStepsShort(count: number): string {
+  if (count === 0) {
+    return "0 пред.";
+  }
+
+  return `${count} пред.`;
+}
+
 function formatCommentsForDisclosure(count: number): string {
   if (count === 0) {
     return "без комментариев";
   }
 
   return `${count} ${pluralizeRu(count, "видимый комментарий", "видимых комментария", "видимых комментариев")}`;
+}
+
+function formatCommentsShort(count: number): string {
+  if (count === 0) {
+    return "0 комм.";
+  }
+
+  return `${count} комм.`;
 }
 
 function pluralizeRu(count: number, one: string, few: string, many: string): string {
@@ -1616,6 +1727,79 @@ const SIDEBAR_CSS = `
     overflow-wrap: anywhere;
   }
 
+  .sc-analysis-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin: 0 0 10px;
+    padding: 10px;
+    background:
+      linear-gradient(135deg, rgba(17, 24, 28, 0.035), rgba(230, 246, 238, 0.52)),
+      #ffffff;
+    border: 1px solid var(--sc-border);
+    border-radius: 8px;
+  }
+
+  .sc-analysis-meta.is-analyzing {
+    border-color: rgba(37, 109, 133, 0.26);
+    background:
+      linear-gradient(135deg, rgba(232, 243, 246, 0.9), rgba(255, 255, 255, 0.86)),
+      #ffffff;
+  }
+
+  .sc-analysis-meta.is-ready {
+    border-color: rgba(21, 145, 90, 0.24);
+    background:
+      linear-gradient(135deg, rgba(230, 246, 238, 0.9), rgba(255, 255, 255, 0.9)),
+      #ffffff;
+  }
+
+  .sc-analysis-meta.is-error {
+    border-color: rgba(181, 71, 58, 0.24);
+    background:
+      linear-gradient(135deg, rgba(255, 248, 246, 0.95), rgba(255, 255, 255, 0.9)),
+      #ffffff;
+  }
+
+  .sc-analysis-meta-item {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    padding: 8px 9px;
+    background: rgba(255, 255, 255, 0.76);
+    border: 1px solid rgba(221, 231, 226, 0.72);
+    border-radius: 7px;
+  }
+
+  .sc-analysis-meta-label {
+    color: var(--sc-faint);
+    font-size: 10px;
+    font-weight: 760;
+    line-height: 1.15;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sc-analysis-meta-value {
+    min-width: 0;
+    color: var(--sc-ink);
+    font-size: 12px;
+    font-weight: 720;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .sc-analysis-meta-note {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 2px 2px 0;
+    color: var(--sc-muted);
+    font-size: 11px;
+    font-weight: 540;
+    line-height: 1.38;
+    overflow-wrap: anywhere;
+  }
+
   .sc-analysis-empty-title {
     margin: 0 0 4px;
     color: var(--sc-text);
@@ -2019,6 +2203,10 @@ const SIDEBAR_CSS = `
     }
 
     .sc-metrics {
+      grid-template-columns: 1fr;
+    }
+
+    .sc-analysis-meta {
       grid-template-columns: 1fr;
     }
 
