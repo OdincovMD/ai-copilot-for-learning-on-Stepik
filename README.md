@@ -430,19 +430,3 @@ Backend mock сохраняет anti-cheating поведение: для тес�
 - UI изолирован через Shadow DOM, чтобы стили Stepik и расширения не
   конфликтовали.
 
-## Если комментарии снова парсятся с шумом
-
-Открой DevTools на странице Stepik и выполни:
-
-```js
-Array.from(document.querySelectorAll("[data-qa*='comment'], [class*='comment']"))
-  .slice(0, 5)
-  .map((element) => ({
-    className: element.className,
-    text: element.textContent?.replace(/\s+/g, " ").trim(),
-    html: element.outerHTML.slice(0, 2000),
-  }));
-```
-
-Самое полезное для доработки — `html` одного реального блока комментария,
-который попал в payload неправильно.
