@@ -387,29 +387,4 @@ type LearningRequest = {
 Для тестовых и кодовых шагов инструкция явно запрещает выбирать вариант ответа,
 раскрывать прямой ответ или писать финальное решение целиком.
 
-## Mock Copilot Answer
-
-Блок `Ответ Copilot` отправляет `LearningRequest` в FastAPI backend по адресу
-из `VITE_BACKEND_URL`. Provider выбирается через `ANALYSIS_PROVIDER`: mock для
-детерминированного теста, ollama для бесплатной локальной модели, openai или
-groq для серверного внешнего provider.
-
-```ts
-type LearningAnalysis = {
-  version: "learning-analysis-v1";
-  mode: "explain" | "hint" | "notes";
-  source: "backend-mock" | "ollama" | "openai" | "groq";
-  summary: string;
-  focusPoints: string[];
-  commentInsights: string[];
-  selfCheck: string[];
-  needsMoreContext: string;
-  warnings: string[];
-};
-```
-
-Backend mock сохраняет anti-cheating поведение: для тестов не выбирает вариант,
-для задач с кодом не пишет финальное решение целиком. Если backend не запущен,
-сайдбар покажет ошибку в блоке `Ответ Copilot`, но собранный payload останется
-видимым.
 
