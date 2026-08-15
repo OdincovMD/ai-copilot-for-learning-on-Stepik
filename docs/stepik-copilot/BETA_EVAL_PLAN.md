@@ -89,3 +89,13 @@
    - provider latency/quality;
    - UI clarity;
    - guardrails.
+
+## Локальный Eval Kit
+
+В репозитории есть минимальный набор для повторяемого ручного прогона:
+
+- [eval/README.md](./eval/README.md) — инструкция, rubric и команды;
+- [eval/eval-set-template.csv](./eval/eval-set-template.csv) — шаблон набора
+  реальных шагов;
+- `npm run eval:feedback -- <feedback.json>` — агрегация экспортированной
+  истории оценок из sidebar.

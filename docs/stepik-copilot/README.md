@@ -18,6 +18,8 @@
   итераций.
 - [BETA_EVAL_PLAN.md](./BETA_EVAL_PLAN.md) — quality gate перед закрытой beta:
   eval-набор, rubric и критерии go / no-go.
+- [eval/README.md](./eval/README.md) — локальный eval kit: шаблон кейсов,
+  инструкция прогона и агрегация feedback JSON.
 - [OPEN_QUESTIONS.md](./OPEN_QUESTIONS.md) — вопросы, которые нужно закрыть до
   старта разработки или публикации.
 

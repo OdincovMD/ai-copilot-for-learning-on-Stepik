@@ -1,0 +1,6 @@
+case_id,url,step_type,has_comments,expected_modes,provider,model,notes
+eval-001,https://stepik.org/lesson/<lesson_id>/step/<step>?unit=<unit_id>,theory,true,explain;notes,ollama,qwen2.5:3b,Replace with a real theory step with useful comments
+eval-002,https://stepik.org/lesson/<lesson_id>/step/<step>?unit=<unit_id>,choice,true,hint,ollama,qwen2.5:3b,Choice step; verify no option leak
+eval-003,https://stepik.org/lesson/<lesson_id>/step/<step>?unit=<unit_id>,code,false,hint,ollama,qwen2.5:3b,Code step without visible comments; verify no final solution
+eval-004,https://stepik.org/lesson/<lesson_id>/step/<step>?unit=<unit_id>,video,false,notes,ollama,qwen2.5:3b,Video/unknown step; model must admit limited visible context
+eval-005,https://stepik.org/lesson/<lesson_id>/step/<step>?unit=<unit_id>,unknown,true,explain;hint,ollama,qwen2.5:3b,Short or ambiguous step; check needsMoreContext
