@@ -338,49 +338,5 @@ type ContextPack = {
 переписками. Если открыть сразу середину урока, предыдущих шагов не будет —
 они появятся после посещения ранних шагов.
 
-## Learning Request Preview
 
-Сайдбар локально формирует `LearningRequest` перед отправкой в backend. Перед
-запуском анализа UI явно показывает, что в запрос попадут текст текущего шага,
-видимые комментарии и предыдущие посещенные шаги из локального контекста.
-
-Доступны режимы:
-
-- `Объяснить` — разобрать текущий шаг и ключевые идеи;
-- `Подсказка` — дать guidance без готового ответа;
-- `Конспект` — подготовить Markdown-конспект по текущему и предыдущим шагам.
-
-Preview содержит текущий Markdown, предыдущие посещенные шаги, комментарии
-текущего шага и guardrails:
-
-```ts
-type LearningRequest = {
-  version: "learning-request-v1";
-  mode: "explain" | "hint" | "notes";
-  language: "ru";
-  instruction: string;
-  guardrails: {
-    noDirectAnswers: true;
-    noMultipleChoiceOptionLeak: true;
-    focusOnUnderstanding: true;
-  };
-  input: {
-    currentStep: {
-      url: string;
-      title?: string;
-      markdown: string;
-      metadata: StepPayload["metadata"];
-      task: StepPayload["context"]["task"];
-    };
-    previousSteps: Array<{
-      url: string;
-      title?: string;
-      markdown: string;
-      metadata: StepPayload["metadata"];
-    }>;
-    comments: string[];
-    commentThreadsCount: number;
-  };
-};
-```
 
