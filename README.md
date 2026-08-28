@@ -302,41 +302,6 @@ type StepPayload = {
 тестовых шагов мы фиксируем тип задания и количество вариантов, но не готовим
 payload как источник прямого ответа.
 
-## Context Pack
-
-Расширение запоминает только те шаги, которые пользователь уже открыл сам.
-Для текущего шага собирается локальный пакет контекста из предыдущих посещенных
-шагов того же урока:
-
-```ts
-type ContextPack = {
-  currentStep: StepPayload;
-  previousSteps: Array<{
-    url: string;
-    title?: string;
-    stepText: string;
-    stepMarkdown: string;
-    metadata: StepPayload["metadata"];
-    context: Pick<StepPayload["context"], "ids" | "task">;
-    cachedAt: string;
-  }>;
-  source: "visited-cache";
-  limits: {
-    maxPreviousSteps: number;
-    maxCharacters: number;
-  };
-  stats: {
-    totalVisitedInLesson: number;
-    includedPreviousSteps: number;
-    truncated: boolean;
-  };
-};
-```
-
-`previousSteps` не содержит `comments` и `commentThreads`: комментарии остаются
-только у текущего шага, чтобы будущий AI-контекст не раздувался шумными
-переписками. Если открыть сразу середину урока, предыдущих шагов не будет —
-они появятся после посещения ранних шагов.
 
 
 
