@@ -168,35 +168,6 @@ set +a
 curl "${VITE_BACKEND_URL}/health"
 ```
 
-### Без Docker
-
-```bash
-cd backend
-python3 -m pip install -r requirements.txt
-set -a
-. ../.env
-set +a
-python3 -m uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload
-```
-
-Health-check:
-
-```bash
-set -a
-. ./.env
-set +a
-curl "${VITE_BACKEND_URL}/health"
-```
-
-Ожидаемый ответ:
-
-```json
-{
-  "status": "ok",
-  "service": "stepik-copilot-api"
-}
-```
-
 ## Локальная загрузка в Chrome
 
 1. Открой `chrome://extensions`.
