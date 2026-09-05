@@ -71,21 +71,7 @@ python3 -m pytest
 получает header `X-Request-Id`; extension показывает `requestId` в ошибке,
 если backend его прислал.
 
-```ts
-type ApiError = {
-  error: {
-    code:
-      | "payload_too_large"
-      | "validation_error"
-      | "provider_config_error"
-      | "provider_error"
-      | "internal_error";
-    message: string;
-    requestId: string;
-    details?: unknown;
-  };
-};
-```
+
 
 `ANALYSIS_PROVIDER=mock` оставляет текущий deterministic backend mock.
 `ANALYSIS_PROVIDER=ollama` переключает `/analyze-step` на локальную Ollama. Для
