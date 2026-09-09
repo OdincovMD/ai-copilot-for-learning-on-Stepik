@@ -73,16 +73,7 @@ python3 -m pytest
 
 
 
-`ANALYSIS_PROVIDER=mock` оставляет текущий deterministic backend mock.
-`ANALYSIS_PROVIDER=ollama` переключает `/analyze-step` на локальную Ollama. Для
-этого нужны `OLLAMA_BASE_URL`, `OLLAMA_MODEL` и `OLLAMA_TIMEOUT_SECONDS` в
-`.env`; API-ключ не нужен.
-`ANALYSIS_PROVIDER=openai` переключает `/analyze-step` на OpenAI Responses API;
-для этого нужны `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` и
-`OPENAI_TIMEOUT_SECONDS` в `.env`. Ключи никогда не попадают в extension.
-`ANALYSIS_PROVIDER=groq` переключает `/analyze-step` на Groq chat completions
-через OpenAI-compatible API; для этого нужны `GROQ_API_KEY`, `GROQ_MODEL`,
-`GROQ_BASE_URL` и `GROQ_TIMEOUT_SECONDS` в `.env`.
+
 
 ### Локальная Ollama
 
