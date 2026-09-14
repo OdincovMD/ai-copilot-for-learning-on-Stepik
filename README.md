@@ -169,10 +169,3 @@ curl "${VITE_BACKEND_URL}/health"
 6. Нажми плавающую кнопку Stepik Copilot справа.
 7. В блоке `Контекст` проверь, что появились предыдущие посещенные шаги.
 8. Запусти backend и нажми `Сформировать preview ответа`.
-9. В DevTools страницы можно найти логи:
-   `[Stepik Copilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
-   `[Stepik Copilot Learning Analysis]`.
-
-
-
-
