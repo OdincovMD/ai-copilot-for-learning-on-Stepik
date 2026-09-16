@@ -40,16 +40,7 @@ npm test
 - сбор Context Pack из ранее посещенных шагов урока;
 - открытие сайдбара и отображение собранных данных.
 
-Backend-тесты запускаются отдельно:
 
-```bash
-cd backend
-python3 -m pip install -r requirements.txt
-set -a
-. ../.env
-set +a
-python3 -m pytest
-```
 
 ## Локальный backend
 
