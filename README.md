@@ -127,14 +127,6 @@ cp .env.example .env
 docker compose --env-file .env up --build backend
 ```
 
-Health-check в другом терминале:
-
-```bash
-set -a
-. ./.env
-set +a
-curl "${VITE_BACKEND_URL}/health"
-```
 
 ## Локальная загрузка в Chrome
 
