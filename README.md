@@ -50,18 +50,6 @@ npm test
 - `MAX_COMMENT_CHARS`
 - `MAX_TOTAL_REQUEST_CHARS`
 
-Если расширение или поддельный клиент отправит слишком большой запрос,
-`POST /analyze-step` вернет `413` с единым error contract. Каждый backend-ответ
-получает header `X-Request-Id`; extension показывает `requestId` в ошибке,
-если backend его прислал.
-
-
-
-
-
-
-
-
 #### Ollama в Docker
 
 Этот вариант не требует устанавливать Ollama на хост. Сервис `ollama` и
