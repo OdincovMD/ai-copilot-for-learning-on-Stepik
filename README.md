@@ -70,10 +70,6 @@ OLLAMA_MODEL=qwen2.5:3b
 docker compose --env-file .env --profile ollama up --build backend ollama-pull
 ```
 
-`ollama-pull` завершится после скачивания модели, а `backend` и `ollama`
-останутся работать. Если модель уже лежит в volume, команда быстро проверит ее
-наличие и не будет заново тянуть весь вес.
-
 #### Ollama на хосте
 
 Если Ollama уже установлена на машине, можно не поднимать контейнер `ollama`.
