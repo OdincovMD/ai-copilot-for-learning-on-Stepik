@@ -23,18 +23,6 @@ npm run build
 
 
 
-## Проверка
-
-```bash
-set -a
-. ./.env
-set +a
-npm test
-```
-
-
-
-
 ## Локальный backend
 
 Расширение отправляет `LearningRequest` в локальный FastAPI-сервис. Все порты,
