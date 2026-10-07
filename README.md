@@ -103,14 +103,3 @@ docker compose --env-file .env up --build backend
 9. Для отладки можно открыть DevTools страницы и найти логи
    `[Stepik Copilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
    `[Stepik Copilot Learning Analysis]`.
-
-## Локальная загрузка в Firefox
-
-1. Выполни `npm run build`.
-2. Открой `about:debugging#/runtime/this-firefox`.
-3. Нажми `Load Temporary Add-on`.
-4. Выбери файл `dist/manifest.json`.
-5. Открой несколько шагов одного урока Stepik подряд.
-6. Нажми плавающую кнопку Stepik Copilot справа.
-7. В блоке `Контекст` проверь, что появились предыдущие посещенные шаги.
-8. Запусти backend и нажми `Сформировать preview ответа`.
