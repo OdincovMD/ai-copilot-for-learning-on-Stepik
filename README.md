@@ -58,30 +58,6 @@ OLLAMA_MODEL=qwen2.5:3b
 docker compose --env-file .env --profile ollama up --build backend ollama-pull
 ```
 
-#### Ollama на хосте
-
-Если Ollama уже установлена на машине, можно не поднимать контейнер `ollama`.
-Для backend в Docker поставь:
-
-```env
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-```
-
-Для backend без Docker поставь:
-
-```env
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
-```bash
-ollama pull qwen2.5:3b
-ollama serve
-```
-
-Локальная модель может долго отвечать на первом запросе. Extension ждет ответ
-столько, сколько указано в `VITE_ANALYSIS_TIMEOUT_MS`; после изменения этого
-значения нужно заново выполнить `npm run build` и reload temporary add-on.
-
 ### Через Docker Compose
 
 ```bash
