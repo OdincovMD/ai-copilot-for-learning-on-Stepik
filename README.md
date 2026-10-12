@@ -58,13 +58,6 @@ OLLAMA_MODEL=qwen2.5:3b
 docker compose --env-file .env --profile ollama up --build backend ollama-pull
 ```
 
-### Через Docker Compose
-
-```bash
-cp .env.example .env
-docker compose --env-file .env up --build backend
-```
-
 
 ## Локальная загрузка в Chrome
 
