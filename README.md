@@ -58,17 +58,5 @@ OLLAMA_MODEL=qwen2.5:3b
 docker compose --env-file .env --profile ollama up --build backend ollama-pull
 ```
 
-
-## Локальная загрузка в Chrome
-
-1. Открой `chrome://extensions`.
-2. Включи `Developer mode`.
-3. Нажми `Load unpacked`.
-4. Выбери папку `dist`.
-5. Открой страницу Stepik: `https://stepik.org/...`.
-6. Нажми плавающую кнопку Stepik Copilot справа на странице.
-7. Проверь, что открылся сайдбар с контекстом, текстом шага и комментариями.
-8. Запусти backend и нажми `Сформировать preview ответа`.
-9. Для отладки можно открыть DevTools страницы и найти логи
-   `[Stepik Copilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
+ilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
    `[Stepik Copilot Learning Analysis]`.
