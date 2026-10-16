@@ -44,14 +44,6 @@ npm run build
 одноразовый `ollama-pull` включены в compose-профиль `ollama`; модель
 скачивается в Docker volume `ollama-models`.
 
-В `.env`:
-
-```env
-ANALYSIS_PROVIDER=ollama
-OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_MODEL=qwen2.5:3b
-```
-
 Запуск:
 
 ```bash
