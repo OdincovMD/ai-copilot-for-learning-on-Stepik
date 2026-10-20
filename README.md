@@ -29,8 +29,6 @@ npm run build
 адреса, модели и ключи берутся из `.env`; не хардкодь их в compose, Dockerfile
 или коде приложения.
 
-Также backend читает из `.env` лимиты входного payload:
-
 - `MAX_CURRENT_STEP_MARKDOWN_CHARS`
 - `MAX_PREVIOUS_STEPS`
 - `MAX_PREVIOUS_STEP_MARKDOWN_CHARS`
