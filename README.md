@@ -12,17 +12,6 @@ npm install
 cp .env.example .env
 ```
 
-## Сборка
-
-```bash
-set -a
-. ./.env
-set +a
-npm run build
-```
-
-
-
 ## Локальный backend
 
 Расширение отправляет `LearningRequest` в локальный FastAPI-сервис. Все порты,
