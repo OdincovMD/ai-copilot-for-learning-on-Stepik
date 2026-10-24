@@ -30,12 +30,3 @@ cp .env.example .env
 Этот вариант не требует устанавливать Ollama на хост. Сервис `ollama` и
 одноразовый `ollama-pull` включены в compose-профиль `ollama`; модель
 скачивается в Docker volume `ollama-models`.
-
-Запуск:
-
-```bash
-docker compose --env-file .env --profile ollama up --build backend ollama-pull
-```
-
-ilot DOM Prototype]`, `[Stepik Copilot Context Pack]` и
-   `[Stepik Copilot Learning Analysis]`.
