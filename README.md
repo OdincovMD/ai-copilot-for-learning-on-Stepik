@@ -24,9 +24,3 @@ cp .env.example .env
 - `MAX_COMMENTS`
 - `MAX_COMMENT_CHARS`
 - `MAX_TOTAL_REQUEST_CHARS`
-
-#### Ollama в Docker
-
-Этот вариант не требует устанавливать Ollama на хост. Сервис `ollama` и
-одноразовый `ollama-pull` включены в compose-профиль `ollama`; модель
-скачивается в Docker volume `ollama-models`.
