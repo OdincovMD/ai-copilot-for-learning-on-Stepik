@@ -5,7 +5,7 @@
 локальный backend. Backend умеет работать в mock-режиме, с локальной Ollama или
 с внешним provider через серверный env.
 
-## Установка зависимостей
+
 
 ```bash
 npm install
